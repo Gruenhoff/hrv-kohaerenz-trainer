@@ -36,6 +36,16 @@ class App {
         this.spectrum   = null;
         this.pacer      = null;
 
+        // Volles Training (Phase 1 → 2 → 3 automatisch)
+        this.fullTraining = {
+            active:          false,
+            phases:          [1, 2, 3],
+            currentIdx:      0,
+            durations:       { 1: 600, 2: 600, 3: 600 },
+            phaseStats:      [],           // Stats jeder Phase
+            transitionTimer: null,
+        };
+
         // Phasenspezifisch gespeicherte Dauern (werden aus DB geladen)
         this.phaseDurations = {
             1: PHASE_DURATIONS[1].default,
@@ -282,11 +292,23 @@ class App {
         // Dauer-Auswahl — wird dynamisch via _updateDurationSelector gesetzt
         this._updateDurationSelector(this.session.phase);
 
+        // Volles Training Toggle
+        const fullToggle = document.getElementById('full-training-toggle');
+        if (fullToggle) {
+            fullToggle.checked = false;
+            fullToggle.addEventListener('change', (e) => this._toggleFullTraining(e.target.checked));
+        }
+
         // Start/Stop-Button
         const startBtn = document.getElementById('session-start-btn');
         if (startBtn) startBtn.addEventListener('click', () => {
-            if (this.session.active) this._stopSession();
-            else this._startSession(this.session.phase);
+            if (this.session.active) {
+                this._stopSession();
+            } else if (this.fullTraining.active) {
+                this._startFullTraining();
+            } else {
+                this._startSession(this.session.phase);
+            }
         });
 
         // Anker-Auswahl
@@ -477,12 +499,23 @@ class App {
         if (newFreq) await this.db.setSetting('resonanceFreq', newFreq);
         await this.db.setSetting('breathRhythm', this.session.breathRhythm);
 
-        // UI
+        // UI zurücksetzen
         document.getElementById('session-start-btn').textContent = 'Session starten';
         document.getElementById('session-start-btn').classList.remove('active');
         document.getElementById('session-status').textContent = 'Session beendet';
 
-        this._showSessionSummary(avgCoherence, peakCoherence, avgRMSSD, duration);
+        // Volles Training: weiter zur nächsten Phase oder Gesamtzusammenfassung
+        if (this.fullTraining.active) {
+            this.fullTraining.phaseStats.push({ phase: this.session.phase, avgCoherence, peakCoherence, avgRMSSD, duration });
+            const nextIdx = this.fullTraining.currentIdx + 1;
+            if (nextIdx < this.fullTraining.phases.length) {
+                this._showPhaseTransition(nextIdx, avgCoherence, avgRMSSD);
+            } else {
+                this._showFullTrainingSummary();
+            }
+        } else {
+            this._showSessionSummary(avgCoherence, peakCoherence, avgRMSSD, duration);
+        }
     }
 
     _showSessionSummary(avgCoherence, peakCoherence, avgRMSSD, duration) {
@@ -506,6 +539,166 @@ class App {
         modal.querySelector('.modal-close')?.addEventListener('click', () => {
             modal.classList.remove('active');
         });
+    }
+
+    // ─── Volles Training ─────────────────────────────────────────────────────
+
+    _toggleFullTraining(enabled) {
+        this.fullTraining.active = enabled;
+
+        const config        = document.getElementById('full-training-config');
+        const regularDur    = document.getElementById('duration-selector');
+        const phase4Btn     = document.querySelector('[data-phase="4"]');
+        const startBtn      = document.getElementById('session-start-btn');
+        const phaseSelector = document.querySelector('.phase-selector');
+
+        if (enabled) {
+            config.style.display     = '';
+            regularDur.style.display = 'none';
+            if (phase4Btn)     phase4Btn.disabled    = true;
+            if (phaseSelector) phaseSelector.style.opacity = '0.4';
+            if (startBtn)      startBtn.textContent  = 'Volles Training starten';
+            this._updateFullTrainingDurationSelectors();
+            // Phase auf 1 setzen (Startphase)
+            this.session.phase = 1;
+            document.querySelectorAll('.phase-select-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.phase === '1');
+            });
+        } else {
+            config.style.display     = 'none';
+            regularDur.style.display = '';
+            if (phase4Btn)     phase4Btn.disabled    = false;
+            if (phaseSelector) phaseSelector.style.opacity = '1';
+            if (startBtn)      startBtn.textContent  = 'Session starten';
+            this._updateDurationSelector(this.session.phase);
+        }
+    }
+
+    _updateFullTrainingDurationSelectors() {
+        [1, 2, 3].forEach(phase => {
+            const container = document.getElementById(`full-duration-p${phase}`);
+            if (!container) return;
+            const config  = PHASE_DURATIONS[phase];
+            const current = this.fullTraining.durations[phase];
+
+            container.innerHTML = config.options.map((secs, i) => `
+                <button class="duration-btn ${secs === current ? 'active' : ''}" data-seconds="${secs}">
+                    ${config.labels[i]}
+                </button>
+            `).join('');
+
+            container.querySelectorAll('.duration-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    container.querySelectorAll('.duration-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    this.fullTraining.durations[phase] = parseInt(btn.dataset.seconds);
+                });
+            });
+        });
+    }
+
+    async _startFullTraining() {
+        this.fullTraining.currentIdx = 0;
+        this.fullTraining.phaseStats = [];
+        const firstPhase = this.fullTraining.phases[0];
+        this.phaseDurations[firstPhase] = this.fullTraining.durations[firstPhase];
+        this._updateFullTrainingProgress(0);
+        await this._startSession(firstPhase);
+    }
+
+    _updateFullTrainingProgress(currentIdx) {
+        const progressEl = document.getElementById('full-training-progress');
+        if (!progressEl) return;
+        progressEl.style.display = this.fullTraining.active ? '' : 'none';
+
+        progressEl.querySelectorAll('.full-progress-dot').forEach((dot, i) => {
+            dot.classList.remove('active', 'done');
+            if (i < currentIdx)      dot.classList.add('done');
+            else if (i === currentIdx) dot.classList.add('active');
+        });
+        progressEl.querySelectorAll('.full-progress-line').forEach((line, i) => {
+            line.classList.toggle('done', i < currentIdx);
+        });
+    }
+
+    _showPhaseTransition(nextIdx, lastAvgCoherence, lastAvgRMSSD) {
+        const nextPhase = this.fullTraining.phases[nextIdx];
+        const phaseNames = { 1: 'Atemtraining', 2: 'Biofeedback-Training', 3: 'Selbsterzeugung' };
+
+        const overlay = document.getElementById('phase-transition-overlay');
+        if (!overlay) return;
+
+        document.getElementById('transition-done-phase').textContent  = this.session.phase;
+        document.getElementById('transition-next-name').textContent   = `Phase ${nextPhase} · ${phaseNames[nextPhase]}`;
+        document.getElementById('transition-stats').innerHTML = `
+            <div class="transition-stat">
+                <div class="transition-stat-value" style="color:${this._coherenceColor(lastAvgCoherence)}">${lastAvgCoherence}%</div>
+                <div class="transition-stat-label">Ø Kohärenz</div>
+            </div>
+            <div class="transition-stat">
+                <div class="transition-stat-value">${lastAvgRMSSD} ms</div>
+                <div class="transition-stat-label">Ø RMSSD</div>
+            </div>
+        `;
+
+        overlay.classList.add('active');
+
+        // Countdown
+        let count = 10;
+        document.getElementById('transition-countdown').textContent = count;
+        clearInterval(this.fullTraining.transitionTimer);
+        this.fullTraining.transitionTimer = setInterval(() => {
+            count--;
+            const el = document.getElementById('transition-countdown');
+            if (el) el.textContent = count;
+            if (count <= 0) {
+                clearInterval(this.fullTraining.transitionTimer);
+                this._advanceToNextPhase(nextIdx);
+            }
+        }, 1000);
+
+        // Jetzt starten
+        document.getElementById('transition-now-btn').onclick = () => {
+            clearInterval(this.fullTraining.transitionTimer);
+            this._advanceToNextPhase(nextIdx);
+        };
+
+        // Training beenden
+        document.getElementById('transition-stop-btn').onclick = () => {
+            clearInterval(this.fullTraining.transitionTimer);
+            overlay.classList.remove('active');
+            this.fullTraining.active = false;
+            document.getElementById('full-training-toggle').checked = false;
+            this._toggleFullTraining(false);
+            this._showFullTrainingSummary();
+        };
+    }
+
+    async _advanceToNextPhase(nextIdx) {
+        const overlay = document.getElementById('phase-transition-overlay');
+        if (overlay) overlay.classList.remove('active');
+
+        this.fullTraining.currentIdx = nextIdx;
+        const nextPhase = this.fullTraining.phases[nextIdx];
+        this.phaseDurations[nextPhase] = this.fullTraining.durations[nextPhase];
+        this._updateFullTrainingProgress(nextIdx);
+        await this._startSession(nextPhase);
+    }
+
+    _showFullTrainingSummary() {
+        const stats = this.fullTraining.phaseStats;
+        if (stats.length === 0) return;
+
+        const avgCoherence  = Math.round(stats.reduce((a, s) => a + s.avgCoherence, 0)  / stats.length);
+        const peakCoherence = Math.max(...stats.map(s => s.peakCoherence));
+        const avgRMSSD      = Math.round(stats.reduce((a, s) => a + s.avgRMSSD, 0)      / stats.length);
+        const totalDuration = stats.reduce((a, s) => a + s.duration, 0);
+
+        // Fortschrittsanzeige verstecken
+        const progressEl = document.getElementById('full-training-progress');
+        if (progressEl) progressEl.style.display = 'none';
+
+        this._showSessionSummary(avgCoherence, peakCoherence, avgRMSSD, totalDuration);
     }
 
     _sessionTimer() {

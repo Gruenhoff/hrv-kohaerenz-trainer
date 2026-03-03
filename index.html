@@ -227,6 +227,54 @@
             <!-- Dauer-Auswahl (wird phasenabhängig befüllt) -->
             <div class="duration-selector" id="duration-selector"></div>
 
+            <!-- ─── Volles Training ─── -->
+            <div class="full-training-toggle-bar">
+                <div>
+                    <div class="full-training-toggle-label">Volles Training</div>
+                    <div class="full-training-toggle-sub">Phase 1 → 2 → 3 automatisch hintereinander</div>
+                </div>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="full-training-toggle">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+
+            <!-- Konfiguration Volles Training (nur sichtbar wenn aktiviert) -->
+            <div id="full-training-config" style="display:none">
+                <div class="full-phase-row">
+                    <div class="full-phase-info">
+                        <span class="full-phase-badge">1</span>
+                        <span class="full-phase-name">Atemtraining</span>
+                    </div>
+                    <div class="duration-selector" id="full-duration-p1"></div>
+                </div>
+                <div class="full-phase-row">
+                    <div class="full-phase-info">
+                        <span class="full-phase-badge">2</span>
+                        <span class="full-phase-name">Biofeedback</span>
+                    </div>
+                    <div class="duration-selector" id="full-duration-p2"></div>
+                </div>
+                <div class="full-phase-row">
+                    <div class="full-phase-info">
+                        <span class="full-phase-badge">3</span>
+                        <span class="full-phase-name">Selbsterzeugung</span>
+                    </div>
+                    <div class="duration-selector" id="full-duration-p3"></div>
+                </div>
+            </div>
+
+            <!-- Fortschrittsanzeige Volles Training (während Session) -->
+            <div id="full-training-progress" style="display:none">
+                <div class="full-progress-track">
+                    <div class="full-progress-dot" data-step="0">1</div>
+                    <div class="full-progress-line" data-line="0"></div>
+                    <div class="full-progress-dot" data-step="1">2</div>
+                    <div class="full-progress-line" data-line="1"></div>
+                    <div class="full-progress-dot" data-step="2">3</div>
+                </div>
+            </div>
+
             <!-- Kohärenz-Haupt-Anzeige -->
             <div class="coherence-main">
                 <div class="coherence-ring-wrapper">
@@ -414,6 +462,29 @@
     </nav>
 
 </div><!-- /#app -->
+
+
+<!-- ══════════════════════════════════════════════════════════
+     PHASEN-ÜBERGANG OVERLAY (Volles Training)
+     ══════════════════════════════════════════════════════════ -->
+<div id="phase-transition-overlay">
+    <div class="phase-transition-card">
+        <div class="phase-transition-done">
+            ✅ Phase <span id="transition-done-phase"></span> abgeschlossen
+        </div>
+        <div class="phase-transition-stats" id="transition-stats"></div>
+        <div class="phase-transition-next">
+            <div class="phase-transition-next-label">Weiter mit</div>
+            <div class="phase-transition-next-name" id="transition-next-name"></div>
+        </div>
+        <div class="phase-transition-countdown" id="transition-countdown">10</div>
+        <div class="phase-transition-sub">Startet automatisch…</div>
+        <div class="phase-transition-actions">
+            <button class="btn-transition-now" id="transition-now-btn">Jetzt starten</button>
+            <button class="btn-transition-stop" id="transition-stop-btn">Training beenden</button>
+        </div>
+    </div>
+</div>
 
 
 <!-- ══════════════════════════════════════════════════════════

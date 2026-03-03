@@ -1245,6 +1245,247 @@ input:checked + .toggle-slider::before { transform: translateX(16px); background
     .anchor-grid { grid-template-columns: repeat(3, 1fr); }
 }
 
+/* ─── Volles Training ────────────────────────────────────── */
+.full-training-toggle-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 0 1.25rem 0.5rem;
+    padding: 0.75rem 1rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.full-training-toggle-label {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.full-training-toggle-sub {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+
+#full-training-config {
+    margin: 0 1.25rem 0.5rem;
+    background: var(--bg-card);
+    border: 1px solid rgba(0, 212, 255, 0.2);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+.full-phase-row {
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.full-phase-row:last-child { border-bottom: none; }
+
+.full-phase-info {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 140px;
+}
+
+.full-phase-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--accent-cyan);
+    color: #000;
+    font-size: 0.75rem;
+    font-weight: 700;
+    flex-shrink: 0;
+}
+
+.full-phase-name {
+    font-size: 0.82rem;
+    color: var(--text-primary);
+}
+
+/* Fortschrittsanzeige */
+#full-training-progress {
+    display: flex;
+    justify-content: center;
+    padding: 0.5rem 1.25rem;
+}
+
+.full-progress-track {
+    display: flex;
+    align-items: center;
+    gap: 0;
+}
+
+.full-progress-dot {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    transition: var(--transition);
+    background: var(--bg-card);
+}
+
+.full-progress-dot.active {
+    border-color: var(--accent-cyan);
+    color: var(--accent-cyan);
+    box-shadow: 0 0 12px rgba(0, 212, 255, 0.4);
+}
+
+.full-progress-dot.done {
+    background: var(--accent-teal);
+    border-color: var(--accent-teal);
+    color: #000;
+}
+
+.full-progress-line {
+    width: 40px;
+    height: 2px;
+    background: var(--border);
+    transition: background 0.4s ease;
+}
+
+.full-progress-line.done {
+    background: var(--accent-teal);
+}
+
+/* ─── Phasen-Übergang Overlay ────────────────────────────── */
+#phase-transition-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(8, 17, 31, 0.97);
+    backdrop-filter: blur(16px);
+    z-index: 400;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+}
+
+#phase-transition-overlay.active { display: flex; }
+
+.phase-transition-card {
+    text-align: center;
+    max-width: 380px;
+    width: 100%;
+    animation: fadeInUp 0.4s ease;
+}
+
+.phase-transition-done {
+    font-size: 1rem;
+    color: var(--accent-teal);
+    margin-bottom: 1.25rem;
+}
+
+.phase-transition-stats {
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+    margin-bottom: 1.5rem;
+}
+
+.transition-stat {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.75rem 1.25rem;
+    min-width: 110px;
+}
+
+.transition-stat-value {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--accent-cyan);
+}
+
+.transition-stat-label {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    margin-top: 3px;
+}
+
+.phase-transition-next-label {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.3rem;
+}
+
+.phase-transition-next-name {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.75rem;
+}
+
+.phase-transition-countdown {
+    font-size: 5rem;
+    font-weight: 200;
+    color: var(--accent-cyan);
+    line-height: 1;
+    text-shadow: 0 0 40px rgba(0, 212, 255, 0.5);
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 0.25rem;
+}
+
+.phase-transition-sub {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-bottom: 1.75rem;
+}
+
+.phase-transition-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.btn-transition-now {
+    background: linear-gradient(135deg, var(--accent-cyan), #007a99);
+    border: none;
+    color: #000;
+    padding: 0.9rem;
+    border-radius: var(--radius);
+    font-size: 1rem;
+    font-weight: 600;
+    transition: var(--transition);
+}
+
+.btn-transition-now:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(0, 212, 255, 0.3);
+}
+
+.btn-transition-stop {
+    background: transparent;
+    border: 1px solid rgba(255, 68, 68, 0.3);
+    color: #ff6666;
+    padding: 0.75rem;
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+    transition: var(--transition);
+}
+
+.btn-transition-stop:hover {
+    background: rgba(255, 68, 68, 0.08);
+    border-color: rgba(255, 68, 68, 0.6);
+}
+
 @media (min-width: 900px) {
     #app { max-width: 800px; margin: 0 auto; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
     .bottom-nav { max-width: 800px; left: 50%; transform: translateX(-50%); }
