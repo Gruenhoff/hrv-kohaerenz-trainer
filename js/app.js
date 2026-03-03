@@ -9,6 +9,14 @@ import { RRVisualizer, SpectrumVisualizer } from './visualizer.js';
 import { BreathPacer }    from './breathpacer.js';
 import { Dashboard }      from './dashboard.js';
 
+// ─── Phasenspezifische Dauer-Optionen ────────────────────────────────────────
+const PHASE_DURATIONS = {
+    1: { options: [300, 600, 900, 1200], default: 600,  labels: ['5 Min', '10 Min', '15 Min', '20 Min'] },
+    2: { options: [300, 600, 900, 1200], default: 600,  labels: ['5 Min', '10 Min', '15 Min', '20 Min'] },
+    3: { options: [300, 600, 900, 1200], default: 600,  labels: ['5 Min', '10 Min', '15 Min', '20 Min'] },
+    4: { options: [60,  90,  120],       default: 90,   labels: ['60 Sek', '90 Sek', '2 Min'] },
+};
+
 // ─── Voreingestellte emotionale Anker ────────────────────────────────────────
 const DEFAULT_ANCHORS = [
     { id: 'dankbarkeit', name: 'Dankbarkeit',      prompt: 'Wofür bin ich gerade dankbar?',                builtin: true },
@@ -28,12 +36,20 @@ class App {
         this.spectrum   = null;
         this.pacer      = null;
 
+        // Phasenspezifisch gespeicherte Dauern (werden aus DB geladen)
+        this.phaseDurations = {
+            1: PHASE_DURATIONS[1].default,
+            2: PHASE_DURATIONS[2].default,
+            3: PHASE_DURATIONS[3].default,
+            4: PHASE_DURATIONS[4].default,
+        };
+
         // Session-Status
         this.session = {
             active:          false,
             phase:           1,
             startTime:       null,
-            durationTarget:  10 * 60, // Sekunden
+            durationTarget:  PHASE_DURATIONS[1].default,
             coherenceLog:    [],
             rmssdLog:        [],
             lfhfLog:         [],
@@ -71,6 +87,8 @@ class App {
     async _loadSettings() {
         this.session.breathRhythm = await this.db.getSetting('breathRhythm', { inhale: 5, holdIn: 0, exhale: 5, holdOut: 0 });
         this.hrv.resonanceFreq    = await this.db.getSetting('resonanceFreq', 0.1);
+        const saved = await this.db.getSetting('phaseDurations', null);
+        if (saved) this.phaseDurations = saved;
     }
 
     // ─── Onboarding ──────────────────────────────────────────────────────────
@@ -261,14 +279,8 @@ class App {
             });
         });
 
-        // Dauer-Auswahl
-        document.querySelectorAll('.duration-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                document.querySelectorAll('.duration-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                this.session.durationTarget = parseInt(btn.dataset.minutes) * 60;
-            });
-        });
+        // Dauer-Auswahl — wird dynamisch via _updateDurationSelector gesetzt
+        this._updateDurationSelector(this.session.phase);
 
         // Start/Stop-Button
         const startBtn = document.getElementById('session-start-btn');
@@ -307,6 +319,10 @@ class App {
         if (anchorSection)   anchorSection.style.display   = (phase === 2 || phase === 3) ? '' : 'none';
         if (challengeSection) challengeSection.style.display = phase === 3 ? '' : 'none';
 
+        // Dauer-Selektor phasenspezifisch aktualisieren
+        this._updateDurationSelector(phase);
+        this.session.durationTarget = this.phaseDurations[phase];
+
         // Phase-Beschreibung
         const phaseDescriptions = {
             1: 'Geführtes Atemtraining — Folge dem Atempacer und beobachte deine Kohärenz.',
@@ -317,6 +333,35 @@ class App {
 
         const descEl = document.getElementById('phase-description');
         if (descEl) descEl.textContent = phaseDescriptions[phase] || '';
+    }
+
+    /**
+     * Dauer-Selektor phasenspezifisch rendern und Event-Listener setzen
+     */
+    _updateDurationSelector(phase) {
+        const container = document.getElementById('duration-selector');
+        if (!container) return;
+
+        const config  = PHASE_DURATIONS[phase];
+        const current = this.phaseDurations[phase];
+
+        container.innerHTML = config.options.map((secs, i) => `
+            <button class="duration-btn ${secs === current ? 'active' : ''}"
+                    data-seconds="${secs}">
+                ${config.labels[i]}
+            </button>
+        `).join('');
+
+        container.querySelectorAll('.duration-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                container.querySelectorAll('.duration-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                const secs = parseInt(btn.dataset.seconds);
+                this.session.durationTarget   = secs;
+                this.phaseDurations[phase]    = secs;
+                await this.db.setSetting('phaseDurations', this.phaseDurations);
+            });
+        });
     }
 
     async _startSession(phase) {
