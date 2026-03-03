@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html>
+<head><title>Icons generieren</title></head>
+<body>
+<script>
+async function generateIcon(size) {
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+
+    // Hintergrund
+    const bg = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
+    bg.addColorStop(0, '#0f2040');
+    bg.addColorStop(1, '#08111f');
+    const radius = size * 0.19;
+    ctx.beginPath();
+    ctx.moveTo(radius, 0);
+    ctx.lineTo(size - radius, 0);
+    ctx.quadraticCurveTo(size, 0, size, radius);
+    ctx.lineTo(size, size - radius);
+    ctx.quadraticCurveTo(size, size, size - radius, size);
+    ctx.lineTo(radius, size);
+    ctx.quadraticCurveTo(0, size, 0, size - radius);
+    ctx.lineTo(0, radius);
+    ctx.quadraticCurveTo(0, 0, radius, 0);
+    ctx.closePath();
+    ctx.fillStyle = bg;
+    ctx.fill();
+
+    // Herz
+    const s = size / 512;
+    const heartGrad = ctx.createLinearGradient(120*s, 130*s, 392*s, 380*s);
+    heartGrad.addColorStop(0, '#00d4ff');
+    heartGrad.addColorStop(1, '#00e5a0');
+
+    ctx.beginPath();
+    ctx.moveTo(256*s, 380*s);
+    ctx.bezierCurveTo(256*s, 380*s, 120*s, 300*s, 120*s, 200*s);
+    ctx.bezierCurveTo(120*s, 155*s, 155*s, 130*s, 195*s, 130*s);
+    ctx.bezierCurveTo(220*s, 130*s, 240*s, 145*s, 256*s, 165*s);
+    ctx.bezierCurveTo(272*s, 145*s, 292*s, 130*s, 317*s, 130*s);
+    ctx.bezierCurveTo(357*s, 130*s, 392*s, 155*s, 392*s, 200*s);
+    ctx.bezierCurveTo(392*s, 300*s, 256*s, 380*s, 256*s, 380*s);
+    ctx.fillStyle = heartGrad;
+    ctx.globalAlpha = 0.85;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // Wellenlinie
+    const waveGrad = ctx.createLinearGradient(80*s, 0, 432*s, 0);
+    waveGrad.addColorStop(0, 'rgba(0,212,255,0.6)');
+    waveGrad.addColorStop(0.5, '#00e5a0');
+    waveGrad.addColorStop(1, 'rgba(0,212,255,0.6)');
+
+    const pts = [80,256,140,256,165,200,185,310,210,230,230,280,256,180,282,320,302,240,322,275,348,200,368,256,432,256];
+    ctx.beginPath();
+    ctx.moveTo(pts[0]*s, pts[1]*s);
+    for (let i = 2; i < pts.length; i += 2) {
+        ctx.lineTo(pts[i]*s, pts[i+1]*s);
+    }
+    ctx.strokeStyle = waveGrad;
+    ctx.lineWidth = 14 * s;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+
+    // Bild-URL
+    return canvas.toDataURL('image/png');
+}
+
+async function run() {
+    const sizes = [192, 512];
+    for (const size of sizes) {
+        const dataUrl = await generateIcon(size);
+        const a = document.createElement('a');
+        a.href = dataUrl;
+        a.download = `icon-${size}.png`;
+        a.textContent = `icon-${size}.png herunterladen`;
+        a.style.cssText = 'display:block;padding:10px;color:blue;font:16px sans-serif;';
+        document.body.appendChild(a);
+    }
+    document.body.insertAdjacentHTML('afterbegin', '<p style="font:14px sans-serif;padding:10px;color:green">Icons generiert! Klicke zum Herunterladen und lege sie in den icons/ Ordner.</p>');
+}
+
+run();
+</script>
+</body>
+</html>

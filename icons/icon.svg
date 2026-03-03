@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#0f2040"/>
+      <stop offset="100%" stop-color="#08111f"/>
+    </radialGradient>
+    <linearGradient id="wave" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00d4ff" stop-opacity="0.6"/>
+      <stop offset="50%" stop-color="#00e5a0"/>
+      <stop offset="100%" stop-color="#00d4ff" stop-opacity="0.6"/>
+    </linearGradient>
+    <linearGradient id="heart" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00d4ff"/>
+      <stop offset="100%" stop-color="#00e5a0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Hintergrund -->
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+
+  <!-- Herzform -->
+  <path d="M256 380
+           C256 380 120 300 120 200
+           C120 155 155 130 195 130
+           C220 130 240 145 256 165
+           C272 145 292 130 317 130
+           C357 130 392 155 392 200
+           C392 300 256 380 256 380Z"
+        fill="url(#heart)"
+        opacity="0.85"/>
+
+  <!-- HRV-Wellenlinie über dem Herz -->
+  <polyline
+    points="80,256  140,256  165,200  185,310  210,230  230,280  256,180  282,320  302,240  322,275  348,200  368,256  432,256"
+    fill="none"
+    stroke="url(#wave)"
+    stroke-width="14"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+</svg>

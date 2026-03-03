@@ -1,0 +1,10 @@
+{
+  "name": "hrv-kohaerenz-trainer",
+  "version": "1.0.0",
+  "description": "HRV Kohärenz-Trainer PWA mit Polar H10",
+  "scripts": {
+    "start": "npx serve . --listen 3000 --no-clipboard",
+    "dev": "npx serve . --listen 3000"
+  },
+  "private": true
+}

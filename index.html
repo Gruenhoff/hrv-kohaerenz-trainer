@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#08111f">
+    <meta name="description" content="HRV Kohärenz-Trainer – Herzratenvariabilitätstraining mit Polar H10">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+    <title>HRV Kohärenz-Trainer</title>
+
+    <link rel="manifest" href="manifest.json">
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+
+    <!-- Chart.js über CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════
+     SPLASH SCREEN
+     ══════════════════════════════════════════════════════════ -->
+<div id="splash" class="view active">
+    <div class="splash-content">
+        <div class="splash-icon">🫀</div>
+        <div class="splash-title">HRV Kohärenz-Trainer</div>
+        <div class="splash-subtitle">Herzratenvariabilität & innere Balance</div>
+        <div class="splash-loader"></div>
+    </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     ONBOARDING
+     ══════════════════════════════════════════════════════════ -->
+<div id="onboarding" class="view">
+    <div class="onboard-container">
+
+        <!-- Schritt 1: Willkommen -->
+        <div class="onboard-step active">
+            <div class="onboard-icon">💚</div>
+            <h2>Willkommen zum HRV Kohärenz-Trainer</h2>
+            <p>
+                Herzratenkohärenz ist ein Zustand tiefer innerer Balance —<br>
+                wenn dein Herzrhythmus in eine gleichmäßige Sinuswelle übergeht.<br><br>
+                Diese App begleitet dich dabei, Kohärenz als <strong>abrufbaren inneren Zustand</strong>
+                zu verankern — nicht nur als geübte Atemtechnik.
+            </p>
+        </div>
+
+        <!-- Schritt 2: Vier Phasen -->
+        <div class="onboard-step">
+            <div class="onboard-icon">🗺️</div>
+            <h2>Dein Trainingsweg</h2>
+            <ul class="onboard-list">
+                <li>
+                    <span class="phase-badge">1</span>
+                    <div>
+                        <strong>Geführtes Atemtraining</strong><br>
+                        <span>Kalibrierung & Resonanzfrequenz ermitteln</span>
+                    </div>
+                </li>
+                <li>
+                    <span class="phase-badge">2</span>
+                    <div>
+                        <strong>Biofeedback-Training</strong><br>
+                        <span>Kohärenz bewusst steuern lernen</span>
+                    </div>
+                </li>
+                <li>
+                    <span class="phase-badge">3</span>
+                    <div>
+                        <strong>Selbsterzeugung</strong><br>
+                        <span>Kohärenz ohne externe Führung</span>
+                    </div>
+                </li>
+                <li>
+                    <span class="phase-badge">4</span>
+                    <div>
+                        <strong>Transfer-Training</strong><br>
+                        <span>Kohärenz in 60 Sekunden abrufen</span>
+                    </div>
+                </li>
+            </ul>
+        </div>
+
+        <!-- Schritt 3: Polar H10 -->
+        <div class="onboard-step">
+            <div class="onboard-icon">📡</div>
+            <h2>Polar H10 verbinden</h2>
+            <p>
+                Diese App verbindet sich via Bluetooth mit deinem<br>
+                <strong>Polar H10 Herzfrequenzsensor</strong>.<br><br>
+                Lege den Brustgurt an (Elektroden leicht befeuchten),<br>
+                klicke dann auf "Verbinden" wenn du bereit bist.
+            </p>
+        </div>
+
+        <!-- Schritt 4: Emotionale Anker -->
+        <div class="onboard-step">
+            <div class="onboard-icon">⚓</div>
+            <h2>Emotionale Anker</h2>
+            <p>
+                Emotionale Anker sind positive Zustände, die du gezielt aktivierst
+                um Kohärenz zu erzeugen — Dankbarkeit, Liebe, Freude.<br><br>
+                Die App trackt welcher Anker bei dir die höchste Kohärenz erzeugt
+                und gibt dir personalisierte Empfehlungen.
+            </p>
+        </div>
+
+        <div class="onboard-actions">
+            <button class="btn-onboard-next" id="onboard-next">Weiter</button>
+            <button class="btn-onboard-skip" id="onboard-skip">Überspringen</button>
+        </div>
+    </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     HAUPT-APP
+     ══════════════════════════════════════════════════════════ -->
+<div id="app" class="view">
+
+    <!-- Header -->
+    <header class="app-header">
+        <div class="app-header-brand">
+            <span class="app-header-icon">🫀</span>
+            <span class="app-header-title">HRV Trainer</span>
+        </div>
+        <div class="bluetooth-status">
+            <div class="ble-dot" title="Bluetooth-Status"></div>
+            <span class="ble-status-text">Nicht verbunden</span>
+            <button class="btn-connect btn-connect-header" title="Polar H10 verbinden">Verbinden</button>
+            <button class="btn-disconnect btn-connect-header" style="display:none" title="Trennen">Trennen</button>
+        </div>
+    </header>
+
+    <!-- App-Inhalt -->
+    <main class="app-content">
+
+        <!-- ─── HOME ─────────────────────────────────────── -->
+        <section id="view-home" class="app-view active">
+            <div class="home-hero">
+                <div class="home-greeting">Guten Tag</div>
+                <div class="home-title">Bereit für <span>Kohärenz</span>?</div>
+            </div>
+
+            <div class="home-quick-stats">
+                <div class="quick-stat">
+                    <div class="quick-stat-value" id="home-last-coherence">—</div>
+                    <div class="quick-stat-label">Ø Kohärenz</div>
+                </div>
+                <div class="quick-stat">
+                    <div class="quick-stat-value" id="home-peak">—</div>
+                    <div class="quick-stat-label">Rekord</div>
+                </div>
+                <div class="quick-stat">
+                    <div class="quick-stat-value" id="home-sessions">0</div>
+                    <div class="quick-stat-label">Sessions</div>
+                </div>
+            </div>
+
+            <div class="section-title">Training starten</div>
+            <div class="phases-grid">
+                <button class="phase-card" data-phase="1">
+                    <span class="phase-icon">🌬️</span>
+                    <div class="phase-number">Phase 1</div>
+                    <div class="phase-name">Atemtraining</div>
+                    <div class="phase-desc">Resonanzfrequenz finden & Kohärenz aufbauen</div>
+                </button>
+                <button class="phase-card" data-phase="2">
+                    <span class="phase-icon">🌊</span>
+                    <div class="phase-number">Phase 2</div>
+                    <div class="phase-name">Biofeedback</div>
+                    <div class="phase-desc">Kohärenz bewusst steuern mit emotionalen Ankern</div>
+                </button>
+                <button class="phase-card" data-phase="3">
+                    <span class="phase-icon">🧘</span>
+                    <div class="phase-number">Phase 3</div>
+                    <div class="phase-name">Selbsterzeugung</div>
+                    <div class="phase-desc">Kohärenz aus innerer Haltung ohne Atemführung</div>
+                </button>
+                <button class="phase-card" data-phase="4">
+                    <span class="phase-icon">⚡</span>
+                    <div class="phase-number">Phase 4</div>
+                    <div class="phase-name">Transfer</div>
+                    <div class="phase-desc">Kohärenz in 60 Sekunden abrufen</div>
+                </button>
+            </div>
+
+            <!-- Bluetooth nicht verbunden Banner -->
+            <div id="bt-connect-banner" class="bt-banner">
+                <div class="bt-banner-text">
+                    📡 Polar H10 noch nicht verbunden
+                </div>
+                <button class="btn-connect btn-banner-connect">Jetzt verbinden</button>
+            </div>
+        </section>
+
+
+        <!-- ─── TRAINING ──────────────────────────────────── -->
+        <section id="view-training" class="app-view">
+
+            <!-- Phasen-Auswahl & Timer -->
+            <div class="training-header">
+                <div class="phase-selector">
+                    <button class="phase-select-btn active" data-phase="1">1</button>
+                    <button class="phase-select-btn" data-phase="2">2</button>
+                    <button class="phase-select-btn" data-phase="3">3</button>
+                    <button class="phase-select-btn" data-phase="4">4</button>
+                </div>
+                <div class="session-controls">
+                    <div>
+                        <div id="session-timer" style="font-size:1rem;font-family:monospace;color:var(--text-primary)">00:00</div>
+                        <div id="session-remaining" style="font-size:0.7rem;color:var(--text-secondary)"></div>
+                    </div>
+                    <button class="btn-session-start" id="session-start-btn">Session starten</button>
+                </div>
+            </div>
+
+            <!-- Phase-Beschreibung -->
+            <p id="phase-description">Wähle eine Phase und starte deine Session.</p>
+
+            <!-- Dauer-Auswahl -->
+            <div class="duration-selector">
+                <button class="duration-btn" data-minutes="5">5 min</button>
+                <button class="duration-btn active" data-minutes="10">10 min</button>
+                <button class="duration-btn" data-minutes="15">15 min</button>
+                <button class="duration-btn" data-minutes="20">20 min</button>
+            </div>
+
+            <!-- Kohärenz-Haupt-Anzeige -->
+            <div class="coherence-main">
+                <div class="coherence-ring-wrapper">
+                    <svg class="coherence-ring-svg" viewBox="0 0 120 120">
+                        <circle class="coherence-ring-bg" cx="60" cy="60" r="54"/>
+                        <circle id="coherence-ring" cx="60" cy="60" r="54"/>
+                    </svg>
+                    <div class="coherence-center">
+                        <div class="coherence-value live-coherence coherence-display">0%</div>
+                        <div class="coherence-unit">Kohärenz</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Live-Stats -->
+            <div class="live-stats-row">
+                <div class="live-stat">
+                    <div class="live-stat-value live-hr">—</div>
+                    <div class="live-stat-label">HF bpm</div>
+                </div>
+                <div class="live-stat">
+                    <div class="live-stat-value live-rmssd">—</div>
+                    <div class="live-stat-label">RMSSD</div>
+                </div>
+                <div class="live-stat">
+                    <div class="live-stat-value live-lfhf">—</div>
+                    <div class="live-stat-label">LF/HF</div>
+                </div>
+            </div>
+
+            <!-- Datenqualität -->
+            <div id="data-quality" class="quality-low">Datenqualität: 0%</div>
+
+            <!-- RR-Wellen-Visualisierung -->
+            <div class="rr-canvas-wrapper">
+                <span class="rr-canvas-label">RR-Intervall</span>
+                <canvas id="rr-canvas"></canvas>
+            </div>
+
+            <!-- Spektrum-Anzeige -->
+            <div class="spectrum-toggle-row">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="spectrum-toggle">
+                    <span class="toggle-slider"></span>
+                </label>
+                <span>FFT-Spektrum anzeigen</span>
+                <span class="live-resonance" style="margin-left:auto;font-size:0.7rem;color:var(--accent-gold)"></span>
+            </div>
+
+            <div id="spectrum-container" style="display:none">
+                <canvas id="spectrum-canvas"></canvas>
+            </div>
+
+            <!-- Atempacer (Phase 1) -->
+            <div id="pacer-section">
+                <div id="pacer-container"></div>
+                <div class="rhythm-display" id="rhythm-display"></div>
+            </div>
+
+            <!-- Emotionale Anker (Phase 2 & 3) -->
+            <div id="anchor-section" style="display:none">
+                <div class="section-title" style="margin-top:0.75rem">Emotionaler Anker</div>
+                <div class="anchor-grid" id="anchor-list"></div>
+                <div id="anchor-prompt-display">Wähle einen Anker</div>
+                <button class="btn-add-anchor" id="add-anchor-btn">+ Eigenen Anker hinzufügen</button>
+            </div>
+
+            <!-- Status -->
+            <div id="session-status"></div>
+
+        </section>
+
+
+        <!-- ─── HISTORY / DASHBOARD ───────────────────────── -->
+        <section id="view-history" class="app-view">
+            <div class="history-header">
+                <h2>Fortschritt & Verlauf</h2>
+            </div>
+            <div id="dashboard-content">
+                <div class="dash-empty">
+                    <div class="dash-empty-icon">📊</div>
+                    <p>Lade Daten…</p>
+                </div>
+            </div>
+        </section>
+
+
+        <!-- ─── EINSTELLUNGEN ─────────────────────────────── -->
+        <section id="view-settings" class="app-view">
+            <div class="settings-header">
+                <h2>Einstellungen</h2>
+            </div>
+
+            <!-- Bluetooth -->
+            <div class="settings-section">
+                <div class="settings-section-title">Bluetooth</div>
+                <div class="settings-row">
+                    <div>
+                        <div class="settings-label">Polar H10</div>
+                        <div class="settings-sublabel ble-status-text">Nicht verbunden</div>
+                    </div>
+                    <div>
+                        <button class="btn-connect btn-session-start" style="font-size:0.8rem;padding:0.5rem 1rem">Verbinden</button>
+                        <button class="btn-disconnect btn-session-start active" style="display:none;font-size:0.8rem;padding:0.5rem 1rem">Trennen</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Atemrhythmus -->
+            <div class="settings-section">
+                <div class="settings-section-title">Atemrhythmus (Sekunden)</div>
+                <div class="settings-row">
+                    <div>
+                        <div class="settings-label">Einatmen</div>
+                        <div class="settings-sublabel">Dauer in Sekunden</div>
+                    </div>
+                    <input type="number" class="settings-input" id="setting-inhale" min="1" max="15" step="0.5" value="5">
+                </div>
+                <div class="settings-row">
+                    <div>
+                        <div class="settings-label">Halten (nach Einatmen)</div>
+                    </div>
+                    <input type="number" class="settings-input" id="setting-holdin" min="0" max="10" step="0.5" value="0">
+                </div>
+                <div class="settings-row">
+                    <div>
+                        <div class="settings-label">Ausatmen</div>
+                    </div>
+                    <input type="number" class="settings-input" id="setting-exhale" min="1" max="15" step="0.5" value="5">
+                </div>
+                <div class="settings-row">
+                    <div>
+                        <div class="settings-label">Halten (nach Ausatmen)</div>
+                    </div>
+                    <input type="number" class="settings-input" id="setting-holdout" min="0" max="10" step="0.5" value="0">
+                </div>
+            </div>
+
+            <button class="btn-settings-save" id="settings-save-btn">Einstellungen speichern</button>
+
+            <!-- Info -->
+            <div class="settings-section">
+                <div class="settings-section-title">Über die App</div>
+                <div class="settings-row">
+                    <div>
+                        <div class="settings-label">Kohärenz-Optimum</div>
+                        <div class="settings-sublabel">0,1 Hz = 6 Atemzüge/Minute</div>
+                    </div>
+                    <span style="font-size:0.8rem;color:var(--accent-cyan)">5s / 5s</span>
+                </div>
+                <div class="settings-row">
+                    <div>
+                        <div class="settings-label">Datenspeicherung</div>
+                        <div class="settings-sublabel">Lokal im Browser – kein Cloud-Account</div>
+                    </div>
+                    <span style="font-size:1rem">🔒</span>
+                </div>
+            </div>
+
+            <button class="btn-danger" id="clear-data-btn">Alle Daten löschen</button>
+
+            <div class="settings-version">HRV Kohärenz-Trainer v1.0 — Powered by Web Bluetooth API</div>
+        </section>
+
+    </main>
+
+    <!-- Bottom-Navigation -->
+    <nav class="bottom-nav">
+        <button class="nav-btn active" data-nav="home">
+            <span class="nav-icon">🏠</span>
+            Home
+        </button>
+        <button class="nav-btn" data-nav="training">
+            <span class="nav-icon">🫀</span>
+            Training
+        </button>
+        <button class="nav-btn" data-nav="history">
+            <span class="nav-icon">📊</span>
+            Verlauf
+        </button>
+        <button class="nav-btn" data-nav="settings">
+            <span class="nav-icon">⚙️</span>
+            Einstellungen
+        </button>
+    </nav>
+
+</div><!-- /#app -->
+
+
+<!-- ══════════════════════════════════════════════════════════
+     SESSION-ZUSAMMENFASSUNG MODAL
+     ══════════════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="session-summary-modal">
+    <div class="modal">
+        <div class="modal-title">Session abgeschlossen 🎉</div>
+        <div class="modal-stats">
+            <div class="modal-stat">
+                <div class="modal-stat-value" id="summary-avg-coh">—</div>
+                <div class="modal-stat-label">Ø Kohärenz</div>
+            </div>
+            <div class="modal-stat">
+                <div class="modal-stat-value" id="summary-peak-coh">—</div>
+                <div class="modal-stat-label">Peak-Kohärenz</div>
+            </div>
+            <div class="modal-stat">
+                <div class="modal-stat-value" id="summary-rmssd">—</div>
+                <div class="modal-stat-label">Ø RMSSD</div>
+            </div>
+            <div class="modal-stat">
+                <div class="modal-stat-value" id="summary-duration">—</div>
+                <div class="modal-stat-label">Dauer</div>
+            </div>
+        </div>
+        <div class="modal-recommendation" id="summary-recommendation"></div>
+        <button class="btn-modal-close modal-close">Weiter</button>
+    </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     TOASTS
+     ══════════════════════════════════════════════════════════ -->
+<div class="toast" id="error-toast"></div>
+<div class="toast" id="success-toast"></div>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     ZUSÄTZLICHE STILE (inline, für spezifische Anpassungen)
+     ══════════════════════════════════════════════════════════ -->
+<style>
+    /* Bluetooth-Banner auf Home-View */
+    .bt-banner {
+        margin: 0.5rem 1.25rem 1.5rem;
+        background: rgba(0,212,255,0.05);
+        border: 1px solid rgba(0,212,255,0.15);
+        border-radius: var(--radius);
+        padding: 0.9rem 1rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+    }
+
+    .bt-banner-text {
+        font-size: 0.85rem;
+        color: var(--text-secondary);
+    }
+
+    .btn-banner-connect {
+        background: var(--accent-cyan);
+        border: none;
+        color: #000;
+        padding: 0.5rem 1rem;
+        border-radius: var(--radius);
+        font-size: 0.8rem;
+        font-weight: 600;
+        transition: var(--transition);
+    }
+
+    .btn-banner-connect:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(0,212,255,0.3);
+    }
+</style>
+
+
+<!-- Scripts -->
+<script type="module" src="js/app.js"></script>
+
+<!-- Service Worker registrieren -->
+<script>
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+            navigator.serviceWorker.register('/sw.js').catch(() => {});
+        });
+    }
+</script>
+
+</body>
+</html>
