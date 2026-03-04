@@ -437,8 +437,9 @@ class App {
             if (this.pacer) { this.pacer.stop(); }
         }
 
-        // FFT-Analyse alle 30 Sekunden
-        this.fftInterval = setInterval(() => this._runFFT(), 30000);
+        // FFT-Analyse alle 5 Sekunden für Echtzeit-Feedback
+        // (Daten-Check in frequencyAnalysis() verhindert Berechnungen bei zu wenig Daten)
+        this.fftInterval = setInterval(() => this._runFFT(), 5000);
 
         // Session-Timer
         this._sessionTimer();
@@ -737,19 +738,12 @@ class App {
         const result = this.hrv.frequencyAnalysis();
         if (!result) return;
 
-        const score = result.coherenceScore;
-        this.session.coherenceLog.push(score);
+        const score   = result.coherenceScore;
+        const elapsed = Date.now() - this.session.startTime;
 
-        // Erste Kohärenz-Phase (>50%) markieren
-        if (!this.session.firstCoherenceAt && score > 50) {
-            this.session.firstCoherenceAt = Math.round((Date.now() - this.session.startTime) / 1000);
-        }
-
-        // Visualizer updaten
+        // ── Echtzeit-UI: bei jedem Aufruf (alle 5s) ──────────────────────────
         if (this.visualizer) this.visualizer.setCoherence(score);
-        if (this.spectrum) {
-            this.spectrum.update(result.frequencies, result.power, result.resonanceFreq);
-        }
+        if (this.spectrum)   this.spectrum.update(result.frequencies, result.power, result.resonanceFreq);
 
         this._updateLiveStats({
             coherence: score,
@@ -757,8 +751,17 @@ class App {
             resonance: result.resonanceFreq,
         });
 
-        // LF/HF loggen
-        this.session.lfhfLog.push(result.lfHfRatio);
+        // Erste Kohärenz-Phase (>50%) markieren
+        if (!this.session.firstCoherenceAt && score > 50) {
+            this.session.firstCoherenceAt = Math.round(elapsed / 1000);
+        }
+
+        // ── Statistik-Logging: nur alle 30s (nach mind. 60s Laufzeit) ────────
+        // Verhindert, dass frühe instabile Werte den Session-Durchschnitt verzerren
+        if (elapsed >= 60000 && Math.round(elapsed / 1000) % 30 === 0) {
+            this.session.coherenceLog.push(score);
+            this.session.lfhfLog.push(result.lfHfRatio);
+        }
     }
 
     _updateLiveStats({ rmssd, coherence, lfhf, resonance } = {}) {
