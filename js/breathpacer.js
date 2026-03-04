@@ -58,7 +58,8 @@ export class BreathPacer {
     stop() {
         this.isRunning = false;
         if (this.animFrame) cancelAnimationFrame(this.animFrame);
-        if (this.labelEl)    this.labelEl.textContent    = 'Pausiert';
+        if (this.audio) this.audio.stopTone();
+        if (this.labelEl)     this.labelEl.textContent    = 'Pausiert';
         if (this.countdownEl) this.countdownEl.textContent = '';
         this._applyVisual(0, 'holdOut');
     }
@@ -110,10 +111,11 @@ export class BreathPacer {
     _onPhaseStart(phase) {
         if (this.onPhaseChange) this.onPhaseChange(phase);
         if (this.audio) {
-            if (phase === 'inhale')  this.audio.onInhale();
-            if (phase === 'holdIn')  this.audio.onHoldIn();
-            if (phase === 'exhale')  this.audio.onExhale();
-            if (phase === 'holdOut') this.audio.onHoldOut();
+            const r = this.rhythm;
+            if (phase === 'inhale')  this.audio.onInhale(r.inhale);
+            if (phase === 'holdIn')  this.audio.onHoldIn(r.holdIn);
+            if (phase === 'exhale')  this.audio.onExhale(r.exhale);
+            if (phase === 'holdOut') this.audio.onHoldOut(r.holdOut);
         }
     }
 
