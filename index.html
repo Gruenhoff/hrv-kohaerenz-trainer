@@ -204,146 +204,196 @@
         <!-- ─── TRAINING ──────────────────────────────────── -->
         <section id="view-training" class="app-view">
 
-            <!-- Phasen-Auswahl & Timer -->
-            <div class="training-header">
-                <div class="phase-selector">
-                    <button class="phase-select-btn active" data-phase="1">1</button>
-                    <button class="phase-select-btn" data-phase="2">2</button>
-                    <button class="phase-select-btn" data-phase="3">3</button>
-                    <button class="phase-select-btn" data-phase="4">4</button>
+            <!-- ═══ SESSION SETUP (vor der Session) ══════════════ -->
+            <div id="session-setup">
+
+                <!-- Phase-Auswahl -->
+                <div class="training-header">
+                    <div class="phase-selector">
+                        <button class="phase-select-btn active" data-phase="1">1</button>
+                        <button class="phase-select-btn" data-phase="2">2</button>
+                        <button class="phase-select-btn" data-phase="3">3</button>
+                        <button class="phase-select-btn" data-phase="4">4</button>
+                    </div>
                 </div>
-                <div class="session-controls">
+
+                <!-- Phase-Beschreibung -->
+                <p id="phase-description">Wähle eine Phase und starte deine Session.</p>
+
+                <!-- Dauer-Auswahl -->
+                <div class="duration-selector" id="duration-selector"></div>
+
+                <!-- Atemrhythmus Vorschau -->
+                <div class="breath-preview-row">
+                    <span class="breath-preview-icon">🌬️</span>
+                    <span id="breath-preview-text">5000 ms Einatmen · 5000 ms Ausatmen</span>
+                </div>
+
+                <!-- Audio-Einstellungen -->
+                <div class="audio-row">
+                    <span class="audio-row-icon">🔊</span>
+                    <span class="audio-row-label">Atemführung Audio</span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="audio-toggle" checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <input type="range" id="volume-slider" min="0" max="1" step="0.05" value="0.35" class="volume-slider">
+                </div>
+
+                <!-- Volles Training Toggle -->
+                <div class="full-training-toggle-bar">
                     <div>
-                        <div id="session-timer" style="font-size:1rem;font-family:monospace;color:var(--text-primary)">00:00</div>
-                        <div id="session-remaining" style="font-size:0.7rem;color:var(--text-secondary)"></div>
+                        <div class="full-training-toggle-label">Volles Training</div>
+                        <div class="full-training-toggle-sub">Phase 1 → 2 → 3 automatisch hintereinander</div>
                     </div>
-                    <button class="btn-session-start" id="session-start-btn">Session starten</button>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="full-training-toggle">
+                        <span class="toggle-slider"></span>
+                    </label>
                 </div>
-            </div>
 
-            <!-- Phase-Beschreibung -->
-            <p id="phase-description">Wähle eine Phase und starte deine Session.</p>
-
-            <!-- Dauer-Auswahl (wird phasenabhängig befüllt) -->
-            <div class="duration-selector" id="duration-selector"></div>
-
-            <!-- ─── Volles Training ─── -->
-            <div class="full-training-toggle-bar">
-                <div>
-                    <div class="full-training-toggle-label">Volles Training</div>
-                    <div class="full-training-toggle-sub">Phase 1 → 2 → 3 automatisch hintereinander</div>
-                </div>
-                <label class="toggle-switch">
-                    <input type="checkbox" id="full-training-toggle">
-                    <span class="toggle-slider"></span>
-                </label>
-            </div>
-
-            <!-- Konfiguration Volles Training (nur sichtbar wenn aktiviert) -->
-            <div id="full-training-config" style="display:none">
-                <div class="full-phase-row">
-                    <div class="full-phase-info">
-                        <span class="full-phase-badge">1</span>
-                        <span class="full-phase-name">Atemtraining</span>
+                <!-- Full Training Config -->
+                <div id="full-training-config" style="display:none">
+                    <div class="full-phase-row">
+                        <div class="full-phase-info">
+                            <span class="full-phase-badge">1</span>
+                            <span class="full-phase-name">Atemtraining</span>
+                        </div>
+                        <div class="duration-selector" id="full-duration-p1"></div>
                     </div>
-                    <div class="duration-selector" id="full-duration-p1"></div>
-                </div>
-                <div class="full-phase-row">
-                    <div class="full-phase-info">
-                        <span class="full-phase-badge">2</span>
-                        <span class="full-phase-name">Biofeedback</span>
+                    <div class="full-phase-row">
+                        <div class="full-phase-info">
+                            <span class="full-phase-badge">2</span>
+                            <span class="full-phase-name">Biofeedback</span>
+                        </div>
+                        <div class="duration-selector" id="full-duration-p2"></div>
                     </div>
-                    <div class="duration-selector" id="full-duration-p2"></div>
-                </div>
-                <div class="full-phase-row">
-                    <div class="full-phase-info">
-                        <span class="full-phase-badge">3</span>
-                        <span class="full-phase-name">Selbsterzeugung</span>
-                    </div>
-                    <div class="duration-selector" id="full-duration-p3"></div>
-                </div>
-            </div>
-
-            <!-- Fortschrittsanzeige Volles Training (während Session) -->
-            <div id="full-training-progress" style="display:none">
-                <div class="full-progress-track">
-                    <div class="full-progress-dot" data-step="0">1</div>
-                    <div class="full-progress-line" data-line="0"></div>
-                    <div class="full-progress-dot" data-step="1">2</div>
-                    <div class="full-progress-line" data-line="1"></div>
-                    <div class="full-progress-dot" data-step="2">3</div>
-                </div>
-            </div>
-
-            <!-- Kohärenz-Haupt-Anzeige -->
-            <div class="coherence-main">
-                <div class="coherence-ring-wrapper">
-                    <svg class="coherence-ring-svg" viewBox="0 0 120 120">
-                        <circle class="coherence-ring-bg" cx="60" cy="60" r="54"/>
-                        <circle id="coherence-ring" cx="60" cy="60" r="54"/>
-                    </svg>
-                    <div class="coherence-center">
-                        <div class="coherence-value live-coherence coherence-display">0%</div>
-                        <div class="coherence-unit">Kohärenz</div>
+                    <div class="full-phase-row">
+                        <div class="full-phase-info">
+                            <span class="full-phase-badge">3</span>
+                            <span class="full-phase-name">Selbsterzeugung</span>
+                        </div>
+                        <div class="duration-selector" id="full-duration-p3"></div>
                     </div>
                 </div>
-            </div>
 
-            <!-- Live-Stats -->
-            <div class="live-stats-row">
-                <div class="live-stat">
-                    <div class="live-stat-value live-hr">—</div>
-                    <div class="live-stat-label">HF bpm</div>
+                <!-- Start-Button -->
+                <button class="btn-session-start" id="session-start-btn">Session starten</button>
+
+            </div><!-- /#session-setup -->
+
+
+            <!-- ═══ SESSION ACTIVE (während der Session) ══════════ -->
+            <div id="session-active" style="display:none">
+
+                <!-- Live-Header: Phase + Timer -->
+                <div class="session-live-header">
+                    <div class="live-phase-indicator">
+                        <span class="live-phase-dot" id="live-phase-dot"></span>
+                        <span id="live-phase-label" class="live-phase-label-text">Phase 1 · Atemtraining</span>
+                    </div>
+                    <div class="live-time-group">
+                        <span id="session-timer" class="live-timer">00:00</span>
+                        <span id="session-remaining" class="live-remaining"></span>
+                    </div>
                 </div>
-                <div class="live-stat">
-                    <div class="live-stat-value live-rmssd">—</div>
-                    <div class="live-stat-label">RMSSD</div>
+
+                <!-- Fortschrittsanzeige Volles Training -->
+                <div id="full-training-progress" style="display:none">
+                    <div class="full-progress-track">
+                        <div class="full-progress-dot" data-step="0">1</div>
+                        <div class="full-progress-line" data-line="0"></div>
+                        <div class="full-progress-dot" data-step="1">2</div>
+                        <div class="full-progress-line" data-line="1"></div>
+                        <div class="full-progress-dot" data-step="2">3</div>
+                    </div>
                 </div>
-                <div class="live-stat">
-                    <div class="live-stat-value live-lfhf">—</div>
-                    <div class="live-stat-label">LF/HF</div>
+
+                <!-- Kohärenz-Karte -->
+                <div class="coherence-card">
+                    <div class="coherence-ring-wrapper">
+                        <svg class="coherence-ring-svg" viewBox="0 0 120 120">
+                            <circle class="coherence-ring-bg" cx="60" cy="60" r="54"/>
+                            <circle id="coherence-ring" cx="60" cy="60" r="54"/>
+                        </svg>
+                        <div class="coherence-center">
+                            <div class="coherence-value live-coherence coherence-display">0%</div>
+                            <div class="coherence-label-text" id="coherence-label-text">—</div>
+                        </div>
+                    </div>
+                    <div class="coherence-card-meta">
+                        <div id="data-quality" class="quality-low">Qualität: 0%</div>
+                        <div id="session-status" class="session-status-text"></div>
+                    </div>
                 </div>
-            </div>
 
-            <!-- Datenqualität -->
-            <div id="data-quality" class="quality-low">Datenqualität: 0%</div>
+                <!-- Atempacer (Phase 1) -->
+                <div id="pacer-section" class="pacer-card">
+                    <div id="pacer-container" class="pacer-orb-host"></div>
+                    <div class="pacer-text-row">
+                        <span id="breath-phase-label" class="breath-phase-lbl">—</span>
+                        <span id="breath-countdown" class="breath-countdown-lbl"></span>
+                    </div>
+                </div>
 
-            <!-- RR-Wellen-Visualisierung -->
-            <div class="rr-canvas-wrapper">
-                <span class="rr-canvas-label">RR-Intervall</span>
-                <canvas id="rr-canvas"></canvas>
-            </div>
+                <!-- HRV-Welle -->
+                <div class="hrv-wave-card">
+                    <span class="hrv-wave-label">RR-Intervall · HRV</span>
+                    <canvas id="rr-canvas"></canvas>
+                </div>
 
-            <!-- Spektrum-Anzeige -->
-            <div class="spectrum-toggle-row">
-                <label class="toggle-switch">
-                    <input type="checkbox" id="spectrum-toggle">
-                    <span class="toggle-slider"></span>
-                </label>
-                <span>FFT-Spektrum anzeigen</span>
-                <span class="live-resonance" style="margin-left:auto;font-size:0.7rem;color:var(--accent-gold)"></span>
-            </div>
+                <!-- 6 Metriken (2 × 3) -->
+                <div class="metrics-grid-6">
+                    <div class="metric-tile">
+                        <div class="metric-value live-hr">—</div>
+                        <div class="metric-label">HF bpm</div>
+                    </div>
+                    <div class="metric-tile">
+                        <div class="metric-value live-rmssd">—</div>
+                        <div class="metric-label">RMSSD</div>
+                    </div>
+                    <div class="metric-tile">
+                        <div class="metric-value live-sdnn">—</div>
+                        <div class="metric-label">SDNN</div>
+                    </div>
+                    <div class="metric-tile">
+                        <div class="metric-value live-lfhf">—</div>
+                        <div class="metric-label">LF/HF</div>
+                    </div>
+                    <div class="metric-tile">
+                        <div class="metric-value live-pnn50">—</div>
+                        <div class="metric-label">pNN50</div>
+                    </div>
+                    <div class="metric-tile">
+                        <div class="metric-value live-resonance">—</div>
+                        <div class="metric-label">Resonanz</div>
+                    </div>
+                </div>
 
-            <div id="spectrum-container" style="display:none">
-                <canvas id="spectrum-canvas"></canvas>
-            </div>
+                <!-- FFT-Spektrum -->
+                <div class="spectrum-toggle-row">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="spectrum-toggle">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span>FFT-Spektrum</span>
+                </div>
+                <div id="spectrum-container" style="display:none">
+                    <canvas id="spectrum-canvas"></canvas>
+                </div>
 
-            <!-- Atempacer (Phase 1) -->
-            <div id="pacer-section">
-                <div id="pacer-container"></div>
-                <div class="rhythm-display" id="rhythm-display"></div>
-            </div>
+                <!-- Emotionale Anker (Phase 2 & 3) -->
+                <div id="anchor-section" style="display:none">
+                    <div class="section-title" style="margin-top:0.75rem">Emotionaler Anker</div>
+                    <div class="anchor-grid" id="anchor-list"></div>
+                    <div id="anchor-prompt-display">Wähle einen Anker</div>
+                    <button class="btn-add-anchor" id="add-anchor-btn">+ Eigenen Anker hinzufügen</button>
+                </div>
 
-            <!-- Emotionale Anker (Phase 2 & 3) -->
-            <div id="anchor-section" style="display:none">
-                <div class="section-title" style="margin-top:0.75rem">Emotionaler Anker</div>
-                <div class="anchor-grid" id="anchor-list"></div>
-                <div id="anchor-prompt-display">Wähle einen Anker</div>
-                <button class="btn-add-anchor" id="add-anchor-btn">+ Eigenen Anker hinzufügen</button>
-            </div>
+                <!-- Stop-Button -->
+                <button class="btn-stop-session" id="session-stop-btn">⏹ Session beenden</button>
 
-            <!-- Status -->
-            <div id="session-status"></div>
+            </div><!-- /#session-active -->
 
         </section>
 
@@ -385,31 +435,34 @@
 
             <!-- Atemrhythmus -->
             <div class="settings-section">
-                <div class="settings-section-title">Atemrhythmus (Sekunden)</div>
+                <div class="settings-section-title">Atemrhythmus (Millisekunden)</div>
                 <div class="settings-row">
                     <div>
                         <div class="settings-label">Einatmen</div>
-                        <div class="settings-sublabel">Dauer in Sekunden</div>
+                        <div class="settings-sublabel">500 – 15 000 ms</div>
                     </div>
-                    <input type="number" class="settings-input" id="setting-inhale" min="1" max="15" step="0.5" value="5">
+                    <input type="number" class="settings-input" id="setting-inhale" min="500" max="15000" step="100" value="5000">
                 </div>
                 <div class="settings-row">
                     <div>
                         <div class="settings-label">Halten (nach Einatmen)</div>
+                        <div class="settings-sublabel">0 – 10 000 ms</div>
                     </div>
-                    <input type="number" class="settings-input" id="setting-holdin" min="0" max="10" step="0.5" value="0">
+                    <input type="number" class="settings-input" id="setting-holdin" min="0" max="10000" step="100" value="0">
                 </div>
                 <div class="settings-row">
                     <div>
                         <div class="settings-label">Ausatmen</div>
+                        <div class="settings-sublabel">500 – 15 000 ms</div>
                     </div>
-                    <input type="number" class="settings-input" id="setting-exhale" min="1" max="15" step="0.5" value="5">
+                    <input type="number" class="settings-input" id="setting-exhale" min="500" max="15000" step="100" value="5000">
                 </div>
                 <div class="settings-row">
                     <div>
                         <div class="settings-label">Halten (nach Ausatmen)</div>
+                        <div class="settings-sublabel">0 – 10 000 ms</div>
                     </div>
-                    <input type="number" class="settings-input" id="setting-holdout" min="0" max="10" step="0.5" value="0">
+                    <input type="number" class="settings-input" id="setting-holdout" min="0" max="10000" step="100" value="0">
                 </div>
             </div>
 
@@ -421,9 +474,9 @@
                 <div class="settings-row">
                     <div>
                         <div class="settings-label">Kohärenz-Optimum</div>
-                        <div class="settings-sublabel">0,1 Hz = 6 Atemzüge/Minute</div>
+                        <div class="settings-sublabel">0,1 Hz = 6 Atemzüge/Min = 5000 ms je Phase</div>
                     </div>
-                    <span style="font-size:0.8rem;color:var(--accent-cyan)">5s / 5s</span>
+                    <span style="font-size:0.8rem;color:var(--accent-cyan)">5s/5s</span>
                 </div>
                 <div class="settings-row">
                     <div>
@@ -572,7 +625,7 @@
 <script>
     if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
-            navigator.serviceWorker.register('/sw.js').catch(() => {});
+            navigator.serviceWorker.register('sw.js').catch(() => {});
         });
     }
 </script>

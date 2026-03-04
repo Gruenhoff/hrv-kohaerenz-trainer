@@ -7,6 +7,7 @@ import { HRVAnalyzer }    from './hrv.js';
 import { Database }       from './database.js';
 import { RRVisualizer, SpectrumVisualizer } from './visualizer.js';
 import { BreathPacer }    from './breathpacer.js';
+import { BreathAudio }    from './audio.js';
 import { Dashboard }      from './dashboard.js';
 
 // ─── Phasenspezifische Dauer-Optionen ────────────────────────────────────────
@@ -31,6 +32,7 @@ class App {
         this.db         = new Database();
         this.ble        = new PolarBluetooth();
         this.hrv        = new HRVAnalyzer();
+        this.audio      = new BreathAudio();
         this.dashboard  = null;
         this.visualizer = null;
         this.spectrum   = null;
@@ -65,7 +67,7 @@ class App {
             lfhfLog:         [],
             anchorId:        null,
             anchorName:      null,
-            breathRhythm:    { inhale: 5, holdIn: 0, exhale: 5, holdOut: 0 },
+            breathRhythm:    { inhale: 5000, holdIn: 0, exhale: 5000, holdOut: 0 }, // ms
             firstCoherenceAt: null,
         };
 
@@ -95,8 +97,18 @@ class App {
     }
 
     async _loadSettings() {
-        this.session.breathRhythm = await this.db.getSetting('breathRhythm', { inhale: 5, holdIn: 0, exhale: 5, holdOut: 0 });
-        this.hrv.resonanceFreq    = await this.db.getSetting('resonanceFreq', 0.1);
+        const rhythm = await this.db.getSetting('breathRhythm', { inhale: 5000, holdIn: 0, exhale: 5000, holdOut: 0 });
+        // Migration from old seconds format (values < 100 are seconds)
+        if (rhythm.inhale < 100) {
+            rhythm.inhale  = Math.round(rhythm.inhale  * 1000);
+            rhythm.holdIn  = Math.round(rhythm.holdIn  * 1000);
+            rhythm.exhale  = Math.round(rhythm.exhale  * 1000);
+            rhythm.holdOut = Math.round(rhythm.holdOut * 1000);
+            await this.db.setSetting('breathRhythm', rhythm);
+        }
+        this.session.breathRhythm = rhythm;
+
+        this.hrv.resonanceFreq = await this.db.getSetting('resonanceFreq', 0.1);
         const saved = await this.db.getSetting('phaseDurations', null);
         if (saved) this.phaseDurations = saved;
     }
@@ -281,6 +293,34 @@ class App {
     // ─── Training-Session ────────────────────────────────────────────────────
 
     _initTrainingView() {
+        // Wenn Session aktiv → direkt Active-View zeigen
+        if (this.session.active) {
+            document.getElementById('session-setup').style.display  = 'none';
+            document.getElementById('session-active').style.display = '';
+            return;
+        }
+        document.getElementById('session-setup').style.display  = '';
+        document.getElementById('session-active').style.display = 'none';
+
+        // Audio-Toggle
+        const audioToggle = document.getElementById('audio-toggle');
+        if (audioToggle) {
+            audioToggle.checked = this.audio.enabled;
+            audioToggle.addEventListener('change', (e) => {
+                this.audio.enabled = e.target.checked;
+                this.audio.unlock();
+            });
+        }
+
+        // Volume-Slider
+        const volSlider = document.getElementById('volume-slider');
+        if (volSlider) {
+            volSlider.value = this.audio.volume;
+            volSlider.addEventListener('input', (e) => {
+                this.audio.volume = parseFloat(e.target.value);
+            });
+        }
+
         // Phase-Auswahl-Buttons
         document.querySelectorAll('.phase-select-btn').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -289,8 +329,11 @@ class App {
             });
         });
 
-        // Dauer-Auswahl — wird dynamisch via _updateDurationSelector gesetzt
+        // Dauer-Auswahl
         this._updateDurationSelector(this.session.phase);
+
+        // Atemrhythmus-Vorschau
+        this._updateBreathPreview();
 
         // Volles Training Toggle
         const fullToggle = document.getElementById('full-training-toggle');
@@ -299,20 +342,20 @@ class App {
             fullToggle.addEventListener('change', (e) => this._toggleFullTraining(e.target.checked));
         }
 
-        // Start/Stop-Button
+        // Start-Button
         const startBtn = document.getElementById('session-start-btn');
         if (startBtn) startBtn.addEventListener('click', () => {
-            if (this.session.active) {
-                this._stopSession();
-            } else if (this.fullTraining.active) {
+            this.audio.unlock();
+            if (this.fullTraining.active) {
                 this._startFullTraining();
             } else {
                 this._startSession(this.session.phase);
             }
         });
 
-        // Anker-Auswahl
-        this._loadAnchors();
+        // Stop-Button (im Active-Bereich)
+        const stopBtn = document.getElementById('session-stop-btn');
+        if (stopBtn) stopBtn.addEventListener('click', () => this._stopSession());
 
         // Spektrum-Toggle
         const spectrumToggle = document.getElementById('spectrum-toggle');
@@ -324,6 +367,19 @@ class App {
                 }
             });
         }
+
+        // Anker-Auswahl vorladen
+        this._loadAnchors();
+    }
+
+    _updateBreathPreview() {
+        const el = document.getElementById('breath-preview-text');
+        if (!el) return;
+        const r = this.session.breathRhythm;
+        const parts = [`${r.inhale} ms Einatmen`, `${r.exhale} ms Ausatmen`];
+        if (r.holdIn)  parts.splice(1, 0, `${r.holdIn} ms Halten`);
+        if (r.holdOut) parts.push(`${r.holdOut} ms Pause`);
+        el.textContent = parts.join(' · ');
     }
 
     _setSessionPhase(phase) {
@@ -332,27 +388,29 @@ class App {
             btn.classList.toggle('active', parseInt(btn.dataset.phase) === phase);
         });
 
-        // UI-Anpassungen je Phase
-        const pacerSection = document.getElementById('pacer-section');
-        const anchorSection = document.getElementById('anchor-section');
-        const challengeSection = document.getElementById('challenge-section');
+        // Live-Phase-Indikator (in session-active)
+        const phaseNames = { 1: 'Atemtraining', 2: 'Biofeedback', 3: 'Selbsterzeugung', 4: 'Transfer' };
+        const liveLabelEl = document.getElementById('live-phase-label');
+        if (liveLabelEl) liveLabelEl.textContent = `Phase ${phase} · ${phaseNames[phase]}`;
 
-        if (pacerSection)    pacerSection.style.display    = phase === 1 ? '' : 'none';
-        if (anchorSection)   anchorSection.style.display   = (phase === 2 || phase === 3) ? '' : 'none';
-        if (challengeSection) challengeSection.style.display = phase === 3 ? '' : 'none';
+        // UI-Anpassungen je Phase
+        const pacerSection  = document.getElementById('pacer-section');
+        const anchorSection = document.getElementById('anchor-section');
+
+        if (pacerSection)   pacerSection.style.display  = phase === 1 ? '' : 'none';
+        if (anchorSection)  anchorSection.style.display = (phase === 2 || phase === 3) ? '' : 'none';
 
         // Dauer-Selektor phasenspezifisch aktualisieren
         this._updateDurationSelector(phase);
         this.session.durationTarget = this.phaseDurations[phase];
 
-        // Phase-Beschreibung
+        // Phase-Beschreibung (im Setup)
         const phaseDescriptions = {
             1: 'Geführtes Atemtraining — Folge dem Atempacer und beobachte deine Kohärenz.',
             2: 'Biofeedback-Training — Aktiviere deinen emotionalen Anker und steuere die Kohärenz.',
             3: 'Selbsterzeugung — Erzeuge Kohärenz aus innerer Haltung ohne externe Führung.',
             4: 'Transfer-Training — Erreiche Kohärenz in 60 Sekunden.',
         };
-
         const descEl = document.getElementById('phase-description');
         if (descEl) descEl.textContent = phaseDescriptions[phase] || '';
     }
@@ -410,6 +468,10 @@ class App {
         this.session.lfhfLog         = [];
         this.session.firstCoherenceAt = null;
 
+        // Setup ausblenden, Active-Bereich einblenden
+        document.getElementById('session-setup').style.display  = 'none';
+        document.getElementById('session-active').style.display = '';
+
         // Canvas-Visualizer initialisieren
         const rrCanvas = document.getElementById('rr-canvas');
         if (rrCanvas) {
@@ -424,37 +486,42 @@ class App {
             this.spectrum = new SpectrumVisualizer(specCanvas);
         }
 
-        // Atempacer (nur Phase 1)
+        // Atempacer (nur Phase 1) — mit Audio + externe Label-Elemente
         if (phase === 1) {
             const pacerContainer = document.getElementById('pacer-container');
+            const labelEl        = document.getElementById('breath-phase-label');
+            const countdownEl    = document.getElementById('breath-countdown');
             if (pacerContainer) {
                 if (this.pacer) this.pacer.destroy();
-                this.pacer = new BreathPacer(pacerContainer, this.session.breathRhythm);
+                this.pacer = new BreathPacer(
+                    pacerContainer,
+                    this.session.breathRhythm, // in Millisekunden
+                    labelEl,
+                    countdownEl,
+                    this.audio
+                );
                 this.pacer.onPhaseChange = (p) => this._onBreathPhase(p);
                 this.pacer.start();
             }
         } else {
-            if (this.pacer) { this.pacer.stop(); }
+            if (this.pacer) this.pacer.stop();
         }
 
-        // FFT-Analyse alle 5 Sekunden für Echtzeit-Feedback
-        // (Daten-Check in frequencyAnalysis() verhindert Berechnungen bei zu wenig Daten)
+        // FFT-Analyse alle 5 Sekunden
         this.fftInterval = setInterval(() => this._runFFT(), 5000);
 
         // Session-Timer
         this._sessionTimer();
 
-        // UI
-        document.getElementById('session-start-btn').textContent = 'Session beenden';
-        document.getElementById('session-start-btn').classList.add('active');
-        document.getElementById('session-status').textContent = 'Aufzeichnung läuft...';
+        // Status
+        const statusEl = document.getElementById('session-status');
+        if (statusEl) statusEl.textContent = 'Aufzeichnung läuft...';
 
-        // Datenqualitäts-Indikator updaten
         this._updateQualityIndicator();
     }
 
-    _onBreathPhase(phase) {
-        // Optional: Audio-Feedback
+    _onBreathPhase(_phase) {
+        // Audio is handled directly by BreathPacer via the audio instance
     }
 
     async _stopSession() {
@@ -500,10 +567,13 @@ class App {
         if (newFreq) await this.db.setSetting('resonanceFreq', newFreq);
         await this.db.setSetting('breathRhythm', this.session.breathRhythm);
 
-        // UI zurücksetzen
-        document.getElementById('session-start-btn').textContent = 'Session starten';
-        document.getElementById('session-start-btn').classList.remove('active');
-        document.getElementById('session-status').textContent = 'Session beendet';
+        // Active ausblenden, Setup wieder anzeigen
+        document.getElementById('session-active').style.display = 'none';
+        document.getElementById('session-setup').style.display  = '';
+        this._updateBreathPreview();
+
+        const statusEl = document.getElementById('session-status');
+        if (statusEl) statusEl.textContent = '';
 
         // Volles Training: weiter zur nächsten Phase oder Gesamtzusammenfassung
         if (this.fullTraining.active) {
@@ -766,16 +836,27 @@ class App {
 
     _updateLiveStats({ rmssd, coherence, lfhf, resonance } = {}) {
         if (rmssd !== undefined) {
-            document.querySelectorAll('.live-rmssd').forEach(el => el.textContent = Math.round(rmssd) + ' ms');
+            const rounded = Math.round(rmssd);
+            document.querySelectorAll('.live-rmssd').forEach(el => el.textContent = rounded + ' ms');
+            // SDNN und pNN50 live berechnen (nutzen denselben RR-Puffer)
+            const sdnn  = Math.round(this.hrv.sdnn());
+            const pnn50 = this.hrv.pnn50();
+            document.querySelectorAll('.live-sdnn').forEach(el => el.textContent = sdnn + ' ms');
+            document.querySelectorAll('.live-pnn50').forEach(el => el.textContent = pnn50 + '%');
         }
         if (coherence !== undefined) {
             document.querySelectorAll('.live-coherence').forEach(el => el.textContent = coherence + '%');
-            // Kohärenz-Anzeige-Farbe
             const color = this._coherenceColor(coherence);
             document.querySelectorAll('.coherence-display').forEach(el => {
                 el.style.color = color;
                 el.style.textShadow = `0 0 30px ${color}`;
             });
+            // Kohärenz-Label
+            const labelEl = document.getElementById('coherence-label-text');
+            if (labelEl) {
+                labelEl.textContent = this._coherenceLabel(coherence);
+                labelEl.style.color = color;
+            }
             // Kohärenz-Ring
             const ring = document.getElementById('coherence-ring');
             if (ring) {
@@ -784,14 +865,24 @@ class App {
                 ring.style.strokeDashoffset = offset;
                 ring.style.stroke = color;
             }
+            // Hohe Kohärenz: Audio-Chime
+            if (coherence >= 70) this.audio.onCoherenceAchieved();
         }
         if (lfhf !== undefined) {
             document.querySelectorAll('.live-lfhf').forEach(el => el.textContent = lfhf.toFixed(2));
         }
         if (resonance !== undefined) {
             const bpm = Math.round(resonance * 60 * 10) / 10;
-            document.querySelectorAll('.live-resonance').forEach(el => el.textContent = `${bpm} Atm/min`);
+            document.querySelectorAll('.live-resonance').forEach(el => el.textContent = `${bpm}/min`);
         }
+    }
+
+    _coherenceLabel(score) {
+        if (score >= 85) return 'Exzellent';
+        if (score >= 70) return 'Sehr gut';
+        if (score >= 50) return 'Gut';
+        if (score >= 30) return 'Mittel';
+        return 'Niedrig';
     }
 
     _coherenceColor(score) {
@@ -869,24 +960,25 @@ class App {
     // ─── Settings-View ───────────────────────────────────────────────────────
 
     async _initSettingsView() {
-        // Atemrhythmus-Einstellungen
+        // Atemrhythmus in Millisekunden
         const { inhale, holdIn, exhale, holdOut } = this.session.breathRhythm;
-        this._setInput('setting-inhale',   inhale);
-        this._setInput('setting-holdin',   holdIn);
-        this._setInput('setting-exhale',   exhale);
-        this._setInput('setting-holdout',  holdOut);
+        this._setInput('setting-inhale',  inhale);
+        this._setInput('setting-holdin',  holdIn);
+        this._setInput('setting-exhale',  exhale);
+        this._setInput('setting-holdout', holdOut);
 
         // Speichern-Button
         const saveBtn = document.getElementById('settings-save-btn');
         if (saveBtn) {
             saveBtn.addEventListener('click', async () => {
                 this.session.breathRhythm = {
-                    inhale:  parseFloat(this._getInput('setting-inhale',  5)),
-                    holdIn:  parseFloat(this._getInput('setting-holdin',  0)),
-                    exhale:  parseFloat(this._getInput('setting-exhale',  5)),
-                    holdOut: parseFloat(this._getInput('setting-holdout', 0)),
+                    inhale:  parseInt(this._getInput('setting-inhale',  5000)),
+                    holdIn:  parseInt(this._getInput('setting-holdin',  0)),
+                    exhale:  parseInt(this._getInput('setting-exhale',  5000)),
+                    holdOut: parseInt(this._getInput('setting-holdout', 0)),
                 };
                 await this.db.setSetting('breathRhythm', this.session.breathRhythm);
+                this._updateBreathPreview();
                 this._showToast('Einstellungen gespeichert!');
             });
         }

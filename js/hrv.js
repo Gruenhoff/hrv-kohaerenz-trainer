@@ -96,6 +96,28 @@ export class HRVAnalyzer {
     }
 
     /**
+     * SDNN (Standard Deviation of NN intervals) in ms
+     */
+    sdnn(rr = this.rrBuffer) {
+        if (rr.length < 2) return 0;
+        const mean = rr.reduce((a, b) => a + b, 0) / rr.length;
+        const variance = rr.reduce((sum, v) => sum + (v - mean) ** 2, 0) / (rr.length - 1);
+        return Math.sqrt(variance);
+    }
+
+    /**
+     * pNN50 (% aufeinanderfolgender Differenzen > 50 ms) in Prozent (0–100)
+     */
+    pnn50(rr = this.rrBuffer) {
+        if (rr.length < 2) return 0;
+        let count = 0;
+        for (let i = 1; i < rr.length; i++) {
+            if (Math.abs(rr[i] - rr[i - 1]) > 50) count++;
+        }
+        return Math.round((count / (rr.length - 1)) * 100);
+    }
+
+    /**
      * Mittlere Herzfrequenz
      */
     meanHR() {

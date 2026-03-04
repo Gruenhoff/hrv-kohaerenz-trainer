@@ -1,55 +1,53 @@
 /**
- * Atemführungs-Modul (Breath Pacer)
- * Animierter expandierender/kontrahierender Kreis mit Phasenanzeige
+ * Atemführungs-Animation – professionelles Redesign
+ * Timing in Millisekunden · Audio-Support · dreischichtige Orb-Animation
  */
-
 export class BreathPacer {
     /**
-     * @param {HTMLElement} container - Container-Element für den Pacer
-     * @param {object} rhythm - Atemrhythmus in Sekunden
+     * @param {HTMLElement} orbContainer  – Container für die Orb-Animation
+     * @param {object}      rhythm        – Timing in ms: { inhale, holdIn, exhale, holdOut }
+     * @param {HTMLElement} [labelEl]     – Element für Phasenbeschriftung
+     * @param {HTMLElement} [countdownEl] – Element für Countdown-Zahl
+     * @param {BreathAudio} [audio]       – Audio-Instanz
      */
-    constructor(container, rhythm = null) {
-        this.container = container;
-        this.rhythm = rhythm || { inhale: 5, holdIn: 0, exhale: 5, holdOut: 0 };
-        this.isRunning = false;
-        this.phase = 'inhale'; // 'inhale' | 'holdIn' | 'exhale' | 'holdOut'
-        this.phaseProgress = 0; // 0-1
-        this.startTime = null;
-        this.animFrame = null;
+    constructor(orbContainer, rhythm, labelEl, countdownEl, audio) {
+        this.container   = orbContainer;
+        this.rhythm      = rhythm || { inhale: 5000, holdIn: 0, exhale: 5000, holdOut: 0 };
+        this.labelEl     = labelEl     || null;
+        this.countdownEl = countdownEl || null;
+        this.audio       = audio       || null;
+
+        this.isRunning   = false;
+        this.phase       = 'inhale';
+        this.startTime   = null;
+        this.animFrame   = null;
+
         this.onPhaseChange = null; // (phase: string) => void
 
-        this._buildDOM();
+        this._buildOrb();
     }
 
-    _buildDOM() {
+    _buildOrb() {
         this.container.innerHTML = `
-            <div class="pacer-wrapper">
-                <div class="pacer-ring pacer-ring-outer"></div>
-                <div class="pacer-ring pacer-ring-mid"></div>
-                <div class="pacer-circle">
-                    <span class="pacer-phase-text">Bereit</span>
-                    <span class="pacer-count-text"></span>
-                </div>
+            <div class="breath-orb-wrapper">
+                <div class="breath-ring breath-ring-3"></div>
+                <div class="breath-ring breath-ring-2"></div>
+                <div class="breath-ring breath-ring-1"></div>
+                <div class="breath-core"></div>
             </div>
         `;
-
-        this.circle     = this.container.querySelector('.pacer-circle');
-        this.ringOuter  = this.container.querySelector('.pacer-ring-outer');
-        this.ringMid    = this.container.querySelector('.pacer-ring-mid');
-        this.phaseText  = this.container.querySelector('.pacer-phase-text');
-        this.countText  = this.container.querySelector('.pacer-count-text');
+        this.ring1 = this.container.querySelector('.breath-ring-1');
+        this.ring2 = this.container.querySelector('.breath-ring-2');
+        this.ring3 = this.container.querySelector('.breath-ring-3');
+        this.core  = this.container.querySelector('.breath-core');
     }
 
-    get cycleDuration() {
-        return this.rhythm.inhale + this.rhythm.holdIn + this.rhythm.exhale + this.rhythm.holdOut;
+    get cycleDurationMs() {
+        const r = this.rhythm;
+        return r.inhale + r.holdIn + r.exhale + r.holdOut;
     }
 
-    /**
-     * Atemrhythmus aktualisieren
-     */
-    setRhythm(rhythm) {
-        this.rhythm = rhythm;
-    }
+    setRhythm(rhythm) { this.rhythm = rhythm; }
 
     start() {
         this.isRunning = true;
@@ -60,95 +58,115 @@ export class BreathPacer {
     stop() {
         this.isRunning = false;
         if (this.animFrame) cancelAnimationFrame(this.animFrame);
-        this.phaseText.textContent = 'Pausiert';
-        this.countText.textContent = '';
+        if (this.labelEl)    this.labelEl.textContent    = 'Pausiert';
+        if (this.countdownEl) this.countdownEl.textContent = '';
+        this._applyVisual(0, 'holdOut');
     }
 
     _tick() {
         if (!this.isRunning) return;
 
-        const now = performance.now();
-        const elapsed = ((now - this.startTime) / 1000) % this.cycleDuration;
+        const now     = performance.now();
+        const elapsed = (now - this.startTime) % this.cycleDurationMs;
         const { inhale, holdIn, exhale, holdOut } = this.rhythm;
 
-        let phase, progress, remaining;
+        let phase, progress, remainingMs;
 
         if (elapsed < inhale) {
             phase = 'inhale';
             progress = elapsed / inhale;
-            remaining = inhale - elapsed;
+            remainingMs = inhale - elapsed;
         } else if (elapsed < inhale + holdIn) {
             phase = 'holdIn';
             progress = 1;
-            remaining = inhale + holdIn - elapsed;
+            remainingMs = inhale + holdIn - elapsed;
         } else if (elapsed < inhale + holdIn + exhale) {
             phase = 'exhale';
             progress = 1 - (elapsed - inhale - holdIn) / exhale;
-            remaining = inhale + holdIn + exhale - elapsed;
+            remainingMs = inhale + holdIn + exhale - elapsed;
         } else {
             phase = 'holdOut';
             progress = 0;
-            remaining = this.cycleDuration - elapsed;
+            remainingMs = this.cycleDurationMs - elapsed;
         }
 
         if (phase !== this.phase) {
             this.phase = phase;
-            if (this.onPhaseChange) this.onPhaseChange(phase);
+            this._onPhaseStart(phase);
         }
 
-        this.phaseProgress = progress;
-        this._render(phase, progress, remaining);
+        this._applyVisual(this._ease(progress, phase), phase);
+        this._updateText(phase, remainingMs);
 
         this.animFrame = requestAnimationFrame(() => this._tick());
     }
 
-    _render(phase, progress, remaining) {
-        // Kreis-Größe: 60px (min) bis 140px (max) — CSS-Skalierung via transform
-        const minScale = 0.6;
-        const maxScale = 1.4;
-        const scale = minScale + progress * (maxScale - minScale);
+    _ease(t, phase) {
+        if (phase === 'inhale') return 1 - Math.pow(1 - t, 2.5);  // ease-out (schwillt sanft an)
+        if (phase === 'exhale') return Math.pow(1 - t, 2);         // ease-in  (lässt sanft nach)
+        return t;
+    }
 
-        // Sanfte Ease-Funktion
-        const eased = this._ease(progress, phase);
-        const easeScale = minScale + eased * (maxScale - minScale);
+    _onPhaseStart(phase) {
+        if (this.onPhaseChange) this.onPhaseChange(phase);
+        if (this.audio) {
+            if (phase === 'inhale')  this.audio.onInhale();
+            if (phase === 'holdIn')  this.audio.onHoldIn();
+            if (phase === 'exhale')  this.audio.onExhale();
+            if (phase === 'holdOut') this.audio.onHoldOut();
+        }
+    }
 
-        this.circle.style.transform = `scale(${easeScale})`;
+    _applyVisual(t, phase) {
+        // t: 0 = kleinster Zustand, 1 = größter Zustand
+        const minScale = 0.5, maxScale = 1.0;
+        const scale    = minScale + t * (maxScale - minScale);
 
-        // Ring-Animation
-        const ringProgress = (phase === 'inhale' || phase === 'holdIn') ? progress : 1 - progress;
-        this.ringOuter.style.transform = `scale(${1 + ringProgress * 0.3})`;
-        this.ringOuter.style.opacity = 0.2 + ringProgress * 0.5;
-        this.ringMid.style.transform = `scale(${1 + ringProgress * 0.15})`;
-        this.ringMid.style.opacity = 0.3 + ringProgress * 0.4;
+        const COLORS = {
+            inhale:  { hex: '#00d4ff', rgb: '0,212,255' },
+            holdIn:  { hex: '#c9a84c', rgb: '201,168,76' },
+            exhale:  { hex: '#00e5a0', rgb: '0,229,160' },
+            holdOut: { hex: '#7a9bc0', rgb: '122,155,192' },
+        };
+        const c = COLORS[phase];
 
-        // Phasen-Text und Farbe
-        const labels = {
+        if (this.core) {
+            this.core.style.transform   = `scale(${scale.toFixed(3)})`;
+            this.core.style.borderColor = c.hex;
+            this.core.style.boxShadow   = `
+                0 0 ${Math.round(15 + t * 45)}px rgba(${c.rgb},${(0.12 + t * 0.38).toFixed(2)}),
+                inset 0 0 ${Math.round(8 + t * 20)}px rgba(${c.rgb},${(0.06 + t * 0.18).toFixed(2)})
+            `;
+            this.core.style.background = `radial-gradient(circle,
+                rgba(${c.rgb},${(0.12 + t * 0.2).toFixed(2)}) 0%,
+                rgba(${c.rgb},0.03) 65%, transparent 100%)`;
+        }
+
+        const ring = (el, s, alpha) => {
+            if (!el) return;
+            el.style.transform   = `scale(${s.toFixed(3)})`;
+            el.style.borderColor = `rgba(${c.rgb},${(alpha * t).toFixed(2)})`;
+        };
+        ring(this.ring1, 0.65 + t * 0.55, 0.50);
+        ring(this.ring2, 0.55 + t * 0.65, 0.32);
+        ring(this.ring3, 0.45 + t * 0.75, 0.18);
+    }
+
+    _updateText(phase, remainingMs) {
+        const LABELS = {
             inhale:  'Einatmen',
             holdIn:  'Halten',
             exhale:  'Ausatmen',
             holdOut: 'Pause',
         };
-
-        const colors = {
-            inhale:  '#00d4ff',
-            holdIn:  '#c9a84c',
-            exhale:  '#00e5a0',
-            holdOut: '#7a9bc0',
-        };
-
-        this.phaseText.textContent = labels[phase];
-        this.circle.style.borderColor = colors[phase];
-        this.circle.style.boxShadow = `0 0 ${20 + progress * 30}px ${colors[phase]}44`;
-
-        // Countdown
-        this.countText.textContent = remaining > 0.1 ? Math.ceil(remaining) : '';
-    }
-
-    _ease(t, phase) {
-        // Cubic ease-in für Einatmen, ease-out für Ausatmen
-        if (phase === 'inhale') return 1 - Math.pow(1 - t, 3);
-        if (phase === 'exhale') return 1 - Math.pow(1 - t, 3);
-        return t;
+        if (this.labelEl) {
+            this.labelEl.textContent    = LABELS[phase];
+            this.labelEl.dataset.phase  = phase;
+        }
+        if (this.countdownEl) {
+            const secs = Math.ceil(remainingMs / 1000);
+            this.countdownEl.textContent = secs > 0 ? secs : '';
+        }
     }
 
     destroy() {
