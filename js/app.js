@@ -9,6 +9,7 @@ import { RRVisualizer, SpectrumVisualizer } from './visualizer.js';
 import { BreathPacer }    from './breathpacer.js';
 import { BreathAudio }    from './audio.js';
 import { Dashboard }      from './dashboard.js';
+import { Zone2 }          from './zone2.js';
 
 // ─── Phasenspezifische Dauer-Optionen ────────────────────────────────────────
 const PHASE_DURATIONS = {
@@ -33,6 +34,7 @@ class App {
         this.ble        = new PolarBluetooth();
         this.hrv        = new HRVAnalyzer();
         this.audio      = new BreathAudio();
+        this.zone2      = null;   // wird nach db.open() initialisiert
         this.dashboard  = null;
         this.visualizer = null;
         this.spectrum   = null;
@@ -82,6 +84,7 @@ class App {
 
     async init() {
         await this.db.open();
+        this.zone2 = new Zone2(this.db);
         await this._loadSettings();
         this._setupBluetooth();
         this._setupNavigation();
@@ -187,6 +190,7 @@ class App {
         if (view === 'history')   this._initHistoryView();
         if (view === 'settings')  this._initSettingsView();
         if (view === 'training')  this._initTrainingView();
+        if (view === 'zone2')     this._initZone2View();
     }
 
     // ─── Home-View ───────────────────────────────────────────────────────────
@@ -235,6 +239,9 @@ class App {
 
     _setupBluetooth() {
         this.ble.onRRInterval = (rrMs) => {
+            // Zone-2-Puffer immer befüllen (auch außerhalb der Session)
+            if (this.zone2) this.zone2.addRR(rrMs);
+
             const accepted = this.hrv.addRR(rrMs);
             if (accepted && this.session.active) {
                 // Visualizer updaten
@@ -507,6 +514,12 @@ class App {
             if (this.pacer) this.pacer.stop();
         }
 
+        // Feldtest im Hintergrund starten, wenn aktiv
+        if (this.zone2 && document.getElementById('z2-feld-toggle')?.checked) {
+            this.zone2.startFeldTestSession();
+            this._updateFeldPanel();
+        }
+
         // FFT-Analyse alle 5 Sekunden
         this.fftInterval = setInterval(() => this._runFFT(), 5000);
 
@@ -531,6 +544,7 @@ class App {
         clearInterval(this.fftInterval);
         if (this.pacer) this.pacer.stop();
         if (this.visualizer) this.visualizer.stop();
+        if (this.zone2) this.zone2.stopFeldTestSession();
 
         // Session speichern
         const duration = Math.round((Date.now() - this.session.startTime) / 1000);
@@ -945,6 +959,262 @@ class App {
         const anchor = { name: name.trim(), prompt: prompt_.trim(), builtin: false };
         await this.db.saveAnchor(anchor);
         this._loadAnchors();
+    }
+
+    // ─── Zone-2-View ─────────────────────────────────────────────────────────
+
+    async _initZone2View() {
+        const z2 = this.zone2;
+        if (!z2) return;
+
+        this._z2ShowSection('z2-home');
+        this._z2LoadLastResult();
+
+        // ── Feldtest-Toggle ──────────────────────────────────────────────────
+        const feldToggle = document.getElementById('z2-feld-toggle');
+        if (feldToggle) {
+            feldToggle.checked = z2.feldActive;
+            feldToggle.addEventListener('change', (e) => {
+                if (e.target.checked) {
+                    if (!this.session.active) {
+                        alert('Bitte starte zuerst eine Training-Session.\nDer Feldtest läuft im Hintergrund mit.');
+                        e.target.checked = false;
+                        return;
+                    }
+                    z2.startFeldTestSession();
+                    z2.onFeldUpdate = (samples, thresh) => this._z2OnFeldUpdate(samples, thresh);
+                } else {
+                    z2.stopFeldTestSession();
+                }
+                this._z2UpdateFeldStatus();
+            });
+        }
+
+        // ── Stufentest starten ───────────────────────────────────────────────
+        const stufenStartBtn = document.getElementById('z2-stufen-start-btn');
+        if (stufenStartBtn) {
+            stufenStartBtn.addEventListener('click', () => {
+                if (!this.ble.isConnected) {
+                    alert('Polar H10 nicht verbunden. Bitte zuerst verbinden.');
+                    return;
+                }
+                this._z2StartStufenTest();
+            });
+        }
+
+        // ── Rückkehr vom Ergebnis ────────────────────────────────────────────
+        const backBtn = document.getElementById('z2-result-back-btn');
+        if (backBtn) {
+            backBtn.addEventListener('click', () => {
+                this._z2ShowSection('z2-home');
+                this._z2LoadLastResult();
+            });
+        }
+
+        // ── Status aktualisieren ─────────────────────────────────────────────
+        this._z2UpdateFeldStatus();
+        if (z2.feldActive) this._updateFeldPanel();
+        if (z2.stufenActive) this._z2ShowSection('z2-stufen-live');
+    }
+
+    _z2ShowSection(id) {
+        ['z2-home', 'z2-stufen-live', 'z2-result-view'].forEach(sid => {
+            const el = document.getElementById(sid);
+            if (el) el.style.display = sid === id ? '' : 'none';
+        });
+    }
+
+    async _z2LoadLastResult() {
+        const results = await this.zone2.getLastResults(1);
+        const container = document.getElementById('z2-last-result');
+        const content   = document.getElementById('z2-last-result-content');
+        if (!container || !content) return;
+        if (!results.length) { container.style.display = 'none'; return; }
+
+        const r    = results[0];
+        const date = new Date(r.date).toLocaleDateString('de-DE', { day: '2-digit', month: 'short', year: 'numeric' });
+        const type = r.type === 'stufentest' ? 'Stufentest' : 'Feldtest';
+        content.innerHTML = `
+            <span style="color:var(--text-secondary)">${date} · ${type}</span>
+            <span style="font-size:1.3rem;font-weight:700;color:var(--accent-teal)">${r.threshHR ? r.threshHR + ' bpm' : '—'}</span>
+            <span style="font-size:0.75rem;color:var(--text-muted)">Zone-2-Grenze</span>
+        `;
+        container.style.display = '';
+    }
+
+    _z2UpdateFeldStatus() {
+        const z2 = this.zone2;
+        const badge = document.getElementById('z2-feld-status-text');
+        if (!badge) return;
+        if (!z2.feldActive) {
+            badge.textContent = 'Inaktiv';
+            badge.className = 'z2-status-badge z2-status-off';
+        } else if (z2.feldWarmupActive) {
+            badge.textContent = 'Einlaufen…';
+            badge.className = 'z2-status-badge z2-status-warm';
+        } else {
+            badge.textContent = 'Aktiv';
+            badge.className = 'z2-status-badge z2-status-on';
+        }
+    }
+
+    _updateFeldPanel() {
+        const z2      = this.zone2;
+        const panel   = document.getElementById('z2-feld-live-panel');
+        const elapsed = document.getElementById('z2-feld-elapsed-text');
+        const count   = document.getElementById('z2-feld-sample-count');
+        const wrap    = document.getElementById('z2-feld-table-wrap');
+        if (!panel) return;
+
+        if (!z2.feldActive) { panel.style.display = 'none'; return; }
+        panel.style.display = '';
+
+        const elSec = z2.feldElapsedSec;
+        if (z2.feldWarmupActive) {
+            const rem = z2.feldWarmupSec - elSec;
+            const m   = Math.floor(rem / 60), s = rem % 60;
+            if (elapsed) elapsed.textContent = `Einlaufzeit: noch ${m}:${String(s).padStart(2,'0')}`;
+        } else {
+            if (elapsed) elapsed.textContent = `Feldtest läuft (${Math.floor(elSec / 60)} min)`;
+        }
+        if (count) count.textContent = `${z2.feldSamples.length} Samples`;
+
+        if (z2.feldSamples.length > 0) {
+            if (wrap) wrap.style.display = '';
+            this._z2FillTable('z2-feld-table', z2.feldSamples, 'feld');
+        }
+    }
+
+    _z2OnFeldUpdate(samples, thresh) {
+        this._updateFeldPanel();
+        this._z2UpdateFeldStatus();
+    }
+
+    _z2StartStufenTest() {
+        const z2 = this.zone2;
+        z2.startStufenTest();
+
+        // UI aufbauen
+        this._z2ShowSection('z2-stufen-live');
+        this._z2BuildProgressDots();
+
+        // Stop-Button
+        const stopBtn = document.getElementById('z2-stufen-stop-btn');
+        if (stopBtn) {
+            stopBtn.onclick = () => {
+                z2.stopStufenTest();
+                this._z2ShowSection('z2-home');
+                this._z2LoadLastResult();
+            };
+        }
+
+        // Callbacks
+        z2.onStufenUpdate = (stageIdx, samples, alpha1, avgHR) => {
+            this._z2UpdateStufenLive(stageIdx, samples, alpha1, avgHR);
+        };
+        z2.onStufenEnd = (samples, threshHR) => {
+            this._z2ShowResult('stufentest', samples, threshHR);
+        };
+
+        // Countdown-Ticker
+        this._z2StufenTicker = setInterval(() => {
+            if (!z2.stufenActive) { clearInterval(this._z2StufenTicker); return; }
+            const rem  = Math.ceil(z2.stufenStageRemainingMs / 1000);
+            const el   = document.getElementById('z2-stage-countdown');
+            if (el) {
+                const m = Math.floor(rem / 60), s = rem % 60;
+                el.textContent = `${m}:${String(s).padStart(2,'0')}`;
+            }
+        }, 500);
+    }
+
+    _z2BuildProgressDots() {
+        const z2    = this.zone2;
+        const wrap  = document.getElementById('z2-stufen-progress');
+        if (!wrap) return;
+        const stages = z2.stufenStages;
+        wrap.innerHTML = stages.map((st, i) => `
+            <div class="z2-prog-dot" id="z2-dot-${i}">${i + 1}</div>
+            ${i < stages.length - 1 ? `<div class="z2-prog-line" id="z2-line-${i}"></div>` : ''}
+        `).join('');
+    }
+
+    _z2UpdateStufenLive(stageIdx, samples, alpha1, avgHR) {
+        const z2 = this.zone2;
+
+        // Stage-Name
+        const nameEl = document.getElementById('z2-stage-name');
+        if (nameEl) nameEl.textContent = z2.stufenStages[stageIdx]?.name ?? '—';
+
+        // Progress-Dots
+        z2.stufenStages.forEach((_, i) => {
+            const dot  = document.getElementById(`z2-dot-${i}`);
+            const line = document.getElementById(`z2-line-${i}`);
+            if (dot) {
+                dot.classList.toggle('active', i === stageIdx);
+                dot.classList.toggle('done',   i < stageIdx);
+            }
+            if (line) line.classList.toggle('done', i < stageIdx);
+        });
+
+        // Live-Werte
+        const a1El = document.getElementById('z2-live-alpha1');
+        const hrEl = document.getElementById('z2-live-hr');
+        if (a1El) a1El.textContent = alpha1 !== null ? alpha1.toFixed(3) : '—';
+        if (hrEl) hrEl.textContent = avgHR  !== null ? avgHR + ' bpm'   : '—';
+
+        // alpha1-Fortschrittsbalken (Skala 0–1.5, Schwelle bei 0.75 = 50%)
+        const bar = document.getElementById('z2-alpha-bar');
+        if (bar && alpha1 !== null) {
+            const pct = Math.min(100, (alpha1 / 1.5) * 100);
+            bar.style.width = pct + '%';
+            bar.style.background = alpha1 >= 0.75 ? 'var(--accent-teal)' : alpha1 >= 0.5 ? '#ffdd00' : '#ff4444';
+        }
+
+        // Tabelle
+        this._z2FillTable('z2-stufen-table', samples, 'stufen');
+    }
+
+    _z2FillTable(tableId, samples, mode) {
+        const tbl  = document.getElementById(tableId);
+        if (!tbl) return;
+        const tbody = tbl.querySelector('tbody');
+        if (!tbody) return;
+
+        tbody.innerHTML = [...samples].reverse().slice(0, 20).map(s => {
+            const zone     = s.alpha1 >= 0.75 ? '<span class="z2-zone-in">Zone 2</span>'
+                           : s.alpha1 >= 0.50 ? '<span class="z2-zone-out">Über Zone 2</span>'
+                           : '<span class="z2-zone-vt2">VT2+</span>';
+            const label    = mode === 'stufen' ? (s.stageName ?? `Stufe ${s.stage + 1}`)
+                                               : this._z2FormatTime(s.time);
+            return `<tr>
+                <td>${label}</td>
+                <td>${s.avgHR} bpm</td>
+                <td>${s.alpha1.toFixed(3)}</td>
+                <td>${zone}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    _z2FormatTime(sec) {
+        const m = Math.floor(sec / 60), s = sec % 60;
+        return `${m}:${String(s).padStart(2,'0')}`;
+    }
+
+    _z2ShowResult(type, samples, threshHR) {
+        clearInterval(this._z2StufenTicker);
+        this._z2ShowSection('z2-result-view');
+
+        const titleEl = document.getElementById('z2-result-title');
+        const hrEl    = document.getElementById('z2-result-hr');
+        const subEl   = document.getElementById('z2-result-sub');
+        if (titleEl) titleEl.textContent = type === 'stufentest' ? 'Stufentest – Ergebnis' : 'Feldtest – Ergebnis';
+        if (hrEl)    hrEl.textContent    = threshHR ? `${threshHR} bpm` : '—';
+        if (subEl)   subEl.textContent   = threshHR
+            ? `Zone-2-Obergrenze (DFA-alpha1 = 0.75)\nEmpfehlung: unter ${threshHR} bpm trainieren.`
+            : 'Kein Schwellenwert gefunden — alpha1 war durchgehend ≥ 0.75 (noch in Zone 2).';
+
+        this._z2FillTable('z2-result-table', samples, type === 'stufentest' ? 'stufen' : 'feld');
     }
 
     // ─── History-View ────────────────────────────────────────────────────────

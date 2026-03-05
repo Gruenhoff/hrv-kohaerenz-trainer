@@ -4,7 +4,7 @@
  */
 
 const DB_NAME = 'hrv-trainer';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 const STORES = {
     SESSIONS:  'sessions',
@@ -51,6 +51,15 @@ export class Database {
                 // Baseline-Messung
                 if (!db.objectStoreNames.contains(STORES.BASELINE)) {
                     db.createObjectStore(STORES.BASELINE, { keyPath: 'key' });
+                }
+
+                // Zone-2-Ergebnisse (Feld- und Stufentest)
+                if (!db.objectStoreNames.contains('zone2results')) {
+                    const z2 = db.createObjectStore('zone2results', {
+                        keyPath: 'id',
+                        autoIncrement: true,
+                    });
+                    z2.createIndex('date', 'date', { unique: false });
                 }
             };
 
@@ -153,6 +162,32 @@ export class Database {
 
     async getBaseline() {
         return this._get(STORES.BASELINE, 'baseline');
+    }
+
+    // ─── Zone-2-Ergebnisse ───────────────────────────────────────────────────
+
+    async saveZone2Result(result) {
+        return this._add('zone2results', result);
+    }
+
+    async getZone2Results(limit = 10) {
+        return new Promise((resolve, reject) => {
+            const tx      = this.db.transaction('zone2results', 'readonly');
+            const store   = tx.objectStore('zone2results');
+            const index   = store.index('date');
+            const results = [];
+            const request = index.openCursor(null, 'prev');
+            request.onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (cursor && results.length < limit) {
+                    results.push(cursor.value);
+                    cursor.continue();
+                } else {
+                    resolve(results);
+                }
+            };
+            request.onerror = (e) => reject(e.target.error);
+        });
     }
 
     // ─── Statistiken ─────────────────────────────────────────────────────────

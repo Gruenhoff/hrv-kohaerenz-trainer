@@ -412,6 +412,158 @@
         </section>
 
 
+        <!-- ─── ZONE 2 ───────────────────────────────────── -->
+        <section id="view-zone2" class="app-view">
+
+            <!-- ═══ STARTBILDSCHIRM ══════════════════════════════ -->
+            <div id="z2-home">
+                <div class="z2-header">
+                    <h2>Zone 2 · DFA-alpha1</h2>
+                    <p class="z2-subhead">Aerobe Schwelle via Herzratenvariabilität ermitteln</p>
+                </div>
+
+                <!-- Feldtest-Karte -->
+                <div class="z2-card" id="z2-feld-card">
+                    <div class="z2-card-icon">🏃</div>
+                    <div class="z2-card-body">
+                        <div class="z2-card-title">Feldtest</div>
+                        <div class="z2-card-desc">Läuft im Hintergrund während deines normalen Trainings. Ab 10 Minuten werden alle 30 s DFA-alpha1 und Ø-HR aufgezeichnet.</div>
+                    </div>
+                    <div class="z2-feld-toggle-row">
+                        <span id="z2-feld-status-text" class="z2-status-badge z2-status-off">Inaktiv</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="z2-feld-toggle">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Stufentest-Karte -->
+                <div class="z2-card">
+                    <div class="z2-card-icon">📈</div>
+                    <div class="z2-card-body">
+                        <div class="z2-card-title">Stufentest</div>
+                        <div class="z2-card-desc">Geführter 18-Min-Test mit 6 Stufen (je 3 Min). Schrittweise Belastungssteigerung bis zur Zone-2-Grenze.</div>
+                    </div>
+                    <button class="z2-start-btn" id="z2-stufen-start-btn">Starten</button>
+                </div>
+
+                <!-- Letztes Ergebnis -->
+                <div id="z2-last-result" style="display:none">
+                    <div class="section-title" style="margin:1rem 1.25rem 0.5rem">Letztes Ergebnis</div>
+                    <div class="z2-result-card" id="z2-last-result-content"></div>
+                </div>
+            </div><!-- /#z2-home -->
+
+
+            <!-- ═══ STUFENTEST LIVE ═══════════════════════════════ -->
+            <div id="z2-stufen-live" style="display:none">
+                <div class="z2-header">
+                    <h2>Stufentest läuft</h2>
+                    <div class="z2-stufen-progress" id="z2-stufen-progress">
+                        <!-- dots generiert per JS -->
+                    </div>
+                </div>
+
+                <!-- Aktuelle Stufe -->
+                <div class="z2-current-stage-card">
+                    <div class="z2-stage-name" id="z2-stage-name">—</div>
+                    <div class="z2-stage-countdown" id="z2-stage-countdown">3:00</div>
+                    <div class="z2-stage-sub">verbleibend in dieser Stufe</div>
+                </div>
+
+                <!-- Live-Werte -->
+                <div class="z2-live-row">
+                    <div class="z2-live-tile">
+                        <div class="z2-live-value" id="z2-live-alpha1">—</div>
+                        <div class="z2-live-label">DFA-alpha1</div>
+                        <div class="z2-alpha-bar-wrap">
+                            <div class="z2-alpha-bar" id="z2-alpha-bar"></div>
+                            <div class="z2-alpha-thresh-mark"></div>
+                        </div>
+                    </div>
+                    <div class="z2-live-tile">
+                        <div class="z2-live-value" id="z2-live-hr">—</div>
+                        <div class="z2-live-label">Ø HR (1 min)</div>
+                    </div>
+                </div>
+
+                <!-- Bisherige Samples -->
+                <div class="z2-samples-table-wrap">
+                    <table class="z2-table" id="z2-stufen-table">
+                        <thead>
+                            <tr>
+                                <th>Stufe</th>
+                                <th>Ø HR</th>
+                                <th>alpha1</th>
+                                <th>Zone</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <button class="btn-stop-session" id="z2-stufen-stop-btn">Test beenden</button>
+            </div><!-- /#z2-stufen-live -->
+
+
+            <!-- ═══ ERGEBNIS-ANSICHT ══════════════════════════════ -->
+            <div id="z2-result-view" style="display:none">
+                <div class="z2-header">
+                    <h2 id="z2-result-title">Ergebnis</h2>
+                </div>
+
+                <div class="z2-result-hero">
+                    <div class="z2-result-hr-label">Zone-2-Grenze (Ø HR)</div>
+                    <div class="z2-result-hr-value" id="z2-result-hr">—</div>
+                    <div class="z2-result-hr-sub" id="z2-result-sub">bei DFA-alpha1 = 0.75</div>
+                </div>
+
+                <!-- Tabelle Samples -->
+                <div class="z2-samples-table-wrap">
+                    <table class="z2-table" id="z2-result-table">
+                        <thead>
+                            <tr>
+                                <th>Zeit / Stufe</th>
+                                <th>Ø HR</th>
+                                <th>alpha1</th>
+                                <th>Zone</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <button class="z2-start-btn" id="z2-result-back-btn">Zurück</button>
+            </div><!-- /#z2-result-view -->
+
+
+            <!-- ═══ FELDTEST LIVE PANEL (kleines Status-Banner) ══ -->
+            <div id="z2-feld-live-panel" style="display:none">
+                <div class="z2-feld-status-bar" id="z2-feld-status-bar">
+                    <span class="z2-feld-dot"></span>
+                    <span id="z2-feld-elapsed-text">Einlaufzeit läuft…</span>
+                    <span id="z2-feld-sample-count">0 Samples</span>
+                </div>
+
+                <div class="z2-samples-table-wrap" id="z2-feld-table-wrap" style="display:none">
+                    <table class="z2-table" id="z2-feld-table">
+                        <thead>
+                            <tr>
+                                <th>Zeit</th>
+                                <th>Ø HR (2 min)</th>
+                                <th>alpha1</th>
+                                <th>Zone</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+
+        </section><!-- /#view-zone2 -->
+
+
         <!-- ─── EINSTELLUNGEN ─────────────────────────────── -->
         <section id="view-settings" class="app-view">
             <div class="settings-header">
@@ -507,6 +659,10 @@
         <button class="nav-btn" data-nav="history">
             <span class="nav-icon">📊</span>
             Verlauf
+        </button>
+        <button class="nav-btn" data-nav="zone2">
+            <span class="nav-icon">🏔️</span>
+            Zone 2
         </button>
         <button class="nav-btn" data-nav="settings">
             <span class="nav-icon">⚙️</span>

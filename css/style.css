@@ -1700,3 +1700,306 @@ input:checked + .toggle-slider::before { transform: translateX(16px); background
 .quality-good  { background: rgba(0,229,160,0.12); color: var(--accent-teal); border: 1px solid rgba(0,229,160,0.2); }
 .quality-mid   { background: rgba(255,221,0,0.1);  color: #ffdd00;            border: 1px solid rgba(255,221,0,0.2); }
 .quality-low   { background: rgba(255,68,68,0.1);  color: #ff6666;            border: 1px solid rgba(255,68,68,0.2); }
+
+/* ═══════════════════════════════════════════════════════════
+   ZONE 2 / DFA-alpha1 View
+   ═══════════════════════════════════════════════════════════ */
+
+/* ─── Allgemeiner Header ─────────────────────────────────── */
+.z2-header {
+    padding: 1.25rem 1.25rem 0.75rem;
+}
+.z2-header h2 {
+    font-size: 1.3rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.25rem;
+}
+.z2-subhead {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+}
+
+/* ─── Karten (Startbildschirm) ───────────────────────────── */
+.z2-card {
+    margin: 0 1.25rem 0.9rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 1.1rem 1.1rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    transition: var(--transition);
+}
+.z2-card:hover { border-color: var(--border-hover); }
+
+.z2-card-icon {
+    font-size: 1.6rem;
+    line-height: 1;
+}
+.z2-card-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.z2-card-desc {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+.z2-feld-toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 0.25rem;
+}
+
+.z2-status-badge {
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.25rem 0.75rem;
+    border-radius: 20px;
+}
+.z2-status-off  { background: rgba(122,155,192,0.12); color: var(--text-secondary); border: 1px solid rgba(122,155,192,0.2); }
+.z2-status-warm { background: rgba(255,221,0,0.1);    color: #ffdd00;               border: 1px solid rgba(255,221,0,0.2); }
+.z2-status-on   { background: rgba(0,229,160,0.12);   color: var(--accent-teal);    border: 1px solid rgba(0,229,160,0.2); }
+
+.z2-start-btn {
+    display: block;
+    width: 100%;
+    margin-top: 0.5rem;
+    padding: 0.7rem 1rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--accent-cyan);
+    background: rgba(0,212,255,0.08);
+    color: var(--accent-cyan);
+    font-size: 0.9rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    transition: var(--transition);
+}
+.z2-start-btn:hover {
+    background: rgba(0,212,255,0.18);
+    box-shadow: 0 4px 16px rgba(0,212,255,0.2);
+}
+
+/* ─── Stufentest: Fortschritts-Punkte ───────────────────── */
+.z2-stufen-progress {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    margin-top: 0.6rem;
+}
+.z2-prog-dot {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    background: var(--bg-card);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    transition: var(--transition);
+    flex-shrink: 0;
+}
+.z2-prog-dot.active { border-color: var(--accent-cyan); color: var(--accent-cyan); background: rgba(0,212,255,0.1); }
+.z2-prog-dot.done   { border-color: var(--accent-teal); color: var(--accent-teal); background: rgba(0,229,160,0.1); }
+.z2-prog-line {
+    flex: 1;
+    height: 2px;
+    background: var(--border);
+    transition: var(--transition);
+}
+.z2-prog-line.done { background: var(--accent-teal); }
+
+/* ─── Stufentest Live: aktuelle Stufe ───────────────────── */
+.z2-current-stage-card {
+    margin: 0 1.25rem 1rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-top: 2px solid var(--accent-cyan);
+    border-radius: var(--radius-lg);
+    padding: 1.2rem;
+    text-align: center;
+}
+.z2-stage-name {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.5rem;
+}
+.z2-stage-countdown {
+    font-size: 3.2rem;
+    font-weight: 200;
+    color: var(--accent-cyan);
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 0 30px rgba(0,212,255,0.4);
+    line-height: 1;
+}
+.z2-stage-sub {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-top: 0.4rem;
+}
+
+/* ─── Live-Metriken ──────────────────────────────────────── */
+.z2-live-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+    margin: 0 1.25rem 0.9rem;
+}
+.z2-live-tile {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 0.9rem 0.85rem;
+    text-align: center;
+}
+.z2-live-value {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+}
+.z2-live-label {
+    font-size: 0.68rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-top: 0.35rem;
+}
+
+/* alpha1 Fortschrittsbalken */
+.z2-alpha-bar-wrap {
+    position: relative;
+    height: 6px;
+    background: rgba(255,255,255,0.07);
+    border-radius: 3px;
+    margin-top: 0.6rem;
+    overflow: visible;
+}
+.z2-alpha-bar {
+    height: 100%;
+    background: var(--accent-teal);
+    border-radius: 3px;
+    width: 0%;
+    transition: width 0.6s ease, background 0.4s;
+}
+/* Schwellen-Marker bei 50% (= alpha1 0.75 von max 1.5) */
+.z2-alpha-thresh-mark {
+    position: absolute;
+    top: -4px;
+    left: 50%;
+    width: 2px;
+    height: 14px;
+    background: rgba(255,221,0,0.8);
+    transform: translateX(-50%);
+}
+
+/* ─── Tabelle ────────────────────────────────────────────── */
+.z2-samples-table-wrap {
+    margin: 0 1.25rem 0.9rem;
+    overflow-x: auto;
+    border-radius: var(--radius);
+}
+.z2-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+}
+.z2-table thead tr {
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+}
+.z2-table th {
+    padding: 0.55rem 0.65rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+    text-align: center;
+    white-space: nowrap;
+}
+.z2-table td {
+    padding: 0.45rem 0.65rem;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    text-align: center;
+    color: var(--text-primary);
+}
+.z2-table tbody tr:last-child td { border-bottom: none; }
+.z2-table .z2-zone-in  { color: var(--accent-teal); font-weight: 600; }
+.z2-table .z2-zone-out { color: #ff8800; font-weight: 600; }
+.z2-table .z2-zone-vt2 { color: #ff4444; font-weight: 600; }
+
+/* ─── Ergebnis-Hero ──────────────────────────────────────── */
+.z2-result-hero {
+    text-align: center;
+    padding: 1.5rem 1.25rem 1.25rem;
+    margin: 0 1.25rem 1rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-top: 3px solid var(--accent-teal);
+    border-radius: var(--radius-lg);
+}
+.z2-result-hr-label {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.5rem;
+}
+.z2-result-hr-value {
+    font-size: 4rem;
+    font-weight: 200;
+    color: var(--accent-teal);
+    line-height: 1;
+    text-shadow: 0 0 30px rgba(0,229,160,0.4);
+    font-variant-numeric: tabular-nums;
+}
+.z2-result-hr-sub {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 0.4rem;
+}
+
+/* ─── Letztes Ergebnis (Startscreen) ────────────────────── */
+.z2-result-card {
+    margin: 0 1.25rem 1.25rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.1rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    font-size: 0.85rem;
+}
+
+/* ─── Feldtest-Status-Banner ─────────────────────────────── */
+.z2-feld-status-bar {
+    margin: 0 1.25rem 0.75rem;
+    background: rgba(0,229,160,0.07);
+    border: 1px solid rgba(0,229,160,0.2);
+    border-radius: var(--radius);
+    padding: 0.65rem 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 0.82rem;
+}
+.z2-feld-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--accent-teal);
+    animation: pulse 1.5s infinite;
+    flex-shrink: 0;
+}
+#z2-feld-sample-count {
+    margin-left: auto;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
