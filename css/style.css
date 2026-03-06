@@ -1782,6 +1782,72 @@ input:checked + .toggle-slider::before { transform: translateX(16px); background
     white-space: nowrap;
 }
 
+/* ─── Schritt-Karten (Home-Ansicht) ──────────────────────── */
+.rez-step-cards {
+    margin: 0 1.25rem 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+.rez-step-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    transition: var(--transition);
+}
+.rez-step-card.disabled {
+    opacity: 0.4;
+    pointer-events: none;
+}
+.rez-step-card.done .rez-step-num {
+    background: rgba(0,229,160,0.15);
+    border-color: rgba(0,229,160,0.3);
+    color: var(--accent-teal);
+}
+.rez-step-card-header {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    padding: 0.8rem 0.9rem 0.6rem;
+}
+.rez-step-card-result {
+    margin: 0 0.9rem 0.4rem;
+    padding: 0.4rem 0.65rem;
+    background: rgba(0,229,160,0.06);
+    border: 1px solid rgba(0,229,160,0.18);
+    border-left: 3px solid var(--accent-teal);
+    border-radius: 6px;
+    font-size: 0.76rem;
+    color: var(--text-secondary);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+}
+.rez-result-label { color: var(--text-muted); flex-shrink: 0; }
+.rez-result-val   { color: var(--accent-teal); font-weight: 600; text-align: right; }
+.rez-step-start-btn {
+    display: block;
+    width: calc(100% - 1.8rem);
+    margin: 0 0.9rem 0.75rem;
+    padding: 0.55rem 0.75rem;
+    border-radius: 8px;
+    border: 1px solid rgba(0,212,255,0.25);
+    background: rgba(0,212,255,0.06);
+    color: var(--accent-cyan);
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-align: center;
+    transition: var(--transition);
+}
+.rez-step-start-btn:hover { background: rgba(0,212,255,0.14); }
+.rez-step-card.done .rez-step-start-btn {
+    border-color: rgba(0,229,160,0.25);
+    background: rgba(0,229,160,0.06);
+    color: var(--accent-teal);
+}
+
 .rez-time-hint {
     margin: 0 1.25rem 0.9rem;
     font-size: 0.78rem;

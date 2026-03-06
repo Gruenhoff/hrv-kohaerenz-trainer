@@ -428,48 +428,79 @@
             <div id="rez-home">
                 <div class="rez-header">
                     <h2>Resonanzfrequenz</h2>
-                    <p class="rez-subhead">Finde deinen optimalen Atemrhythmus in 3 Schritten</p>
+                    <p class="rez-subhead">Optimaler Atemrhythmus in 4 Schritten · Jeden Schritt einzeln starten</p>
                 </div>
 
-                <!-- Schritt-Übersicht -->
-                <div class="rez-steps-overview">
-                    <div class="rez-step-info">
-                        <div class="rez-step-num">1</div>
-                        <div class="rez-step-body">
-                            <div class="rez-step-title">Grob-Scan</div>
-                            <div class="rez-step-desc">6,5 · 6,0 · 5,5 · 5,0 · 4,5 Atemz/min · 5 × 4 Min</div>
+                <!-- Schritt-Karten -->
+                <div class="rez-step-cards">
+                    <div class="rez-step-card" id="rez-card-1">
+                        <div class="rez-step-card-header">
+                            <div class="rez-step-num" id="rez-badge-1">1</div>
+                            <div class="rez-step-body">
+                                <div class="rez-step-title">Grob-Scan</div>
+                                <div class="rez-step-desc">6,5 · 6,0 · 5,5 · 5,0 · 4,5 Atemz/min · 5 × 4 Min</div>
+                            </div>
+                            <div class="rez-step-time">20 Min</div>
                         </div>
-                        <div class="rez-step-time">20 Min</div>
-                    </div>
-                    <div class="rez-step-info">
-                        <div class="rez-step-num">2</div>
-                        <div class="rez-step-body">
-                            <div class="rez-step-title">Fein-Scan</div>
-                            <div class="rez-step-desc">±0,2 um Optimum in 0,1er-Schritten · 5 × 4 Min</div>
+                        <div class="rez-step-card-result" id="rez-result-1" style="display:none">
+                            <span class="rez-result-label">Optimum</span>
+                            <span class="rez-result-val" id="rez-result-val-1">—</span>
                         </div>
-                        <div class="rez-step-time">20 Min</div>
+                        <button class="rez-step-start-btn" id="rez-start-1">Schritt 1 starten</button>
                     </div>
-                    <div class="rez-step-info">
-                        <div class="rez-step-num">3</div>
-                        <div class="rez-step-body">
-                            <div class="rez-step-title">Pausen-Scan</div>
-                            <div class="rez-step-desc">Halt-In / Halt-Out 0–2 s, 6 Kombinationen · 6 × 4 Min</div>
-                        </div>
-                        <div class="rez-step-time">24 Min</div>
-                    </div>
-                    <div class="rez-step-info">
-                        <div class="rez-step-num">4</div>
-                        <div class="rez-step-body">
-                            <div class="rez-step-title">Verhältnis-Scan</div>
-                            <div class="rez-step-desc">Ein:Aus 35:65 · 40:60 · 45:55 · 50:50 · 55:45, Pausen fix · 5 × 4 Min</div>
-                        </div>
-                        <div class="rez-step-time">20 Min</div>
-                    </div>
-                </div>
 
-                <div class="rez-time-hint">⏱ Gesamtdauer ca. 84 Minuten · Polar H10 erforderlich</div>
+                    <div class="rez-step-card" id="rez-card-2">
+                        <div class="rez-step-card-header">
+                            <div class="rez-step-num" id="rez-badge-2">2</div>
+                            <div class="rez-step-body">
+                                <div class="rez-step-title">Fein-Scan</div>
+                                <div class="rez-step-desc">±0,2 um Optimum in 0,1er-Schritten · 5 × 4 Min</div>
+                            </div>
+                            <div class="rez-step-time">20 Min</div>
+                        </div>
+                        <div class="rez-step-card-result" id="rez-result-2" style="display:none">
+                            <span class="rez-result-label">Optimum</span>
+                            <span class="rez-result-val" id="rez-result-val-2">—</span>
+                        </div>
+                        <button class="rez-step-start-btn" id="rez-start-2">Schritt 2 starten</button>
+                    </div>
 
-                <button class="rez-primary-btn" id="rez-start-btn">Test starten</button>
+                    <div class="rez-step-card" id="rez-card-3">
+                        <div class="rez-step-card-header">
+                            <div class="rez-step-num" id="rez-badge-3">3</div>
+                            <div class="rez-step-body">
+                                <div class="rez-step-title">Verhältnis-Scan</div>
+                                <div class="rez-step-desc">Ein:Aus 35:65 · 40:60 · 45:55 · 50:50 · 55:45 · 5 × 4 Min</div>
+                            </div>
+                            <div class="rez-step-time">20 Min</div>
+                        </div>
+                        <div class="rez-step-card-result" id="rez-result-3" style="display:none">
+                            <span class="rez-result-label">Optimum</span>
+                            <span class="rez-result-val" id="rez-result-val-3">—</span>
+                        </div>
+                        <button class="rez-step-start-btn" id="rez-start-3">Schritt 3 starten</button>
+                    </div>
+
+                    <div class="rez-step-card" id="rez-card-4">
+                        <div class="rez-step-card-header">
+                            <div class="rez-step-num" id="rez-badge-4">4</div>
+                            <div class="rez-step-body">
+                                <div class="rez-step-title">Pausen-Scan</div>
+                                <div class="rez-step-desc">Halt-In/Halt-Out grob (6) + fein (5) · 11 × 4 Min</div>
+                            </div>
+                            <div class="rez-step-time">44 Min</div>
+                        </div>
+                        <div class="rez-step-card-result" id="rez-result-4" style="display:none">
+                            <span class="rez-result-label">Optimum</span>
+                            <span class="rez-result-val" id="rez-result-val-4">—</span>
+                        </div>
+                        <button class="rez-step-start-btn" id="rez-start-4">Schritt 4 starten</button>
+                    </div>
+                </div><!-- /.rez-step-cards -->
+
+                <div class="rez-time-hint">⏱ Komplett-Test ca. 104 Minuten · Polar H10 erforderlich</div>
+
+                <button class="rez-primary-btn" id="rez-start-full">Komplett-Test starten</button>
 
                 <!-- Letztes Ergebnis -->
                 <div id="rez-last-result" style="display:none">
@@ -586,7 +617,7 @@
 
                 <!-- Vergleichs-Tabelle aller 3 Schritte -->
                 <div class="z2-samples-table-wrap" id="rez-final-table-wrap">
-                    <div class="section-title" style="padding:0.5rem 0 0.5rem">Schritt 3 · Alle Pausen-Muster</div>
+                    <div class="section-title" style="padding:0.5rem 0 0.5rem">Schritt 4 · Pausen-Scan (alle Muster)</div>
                     <table class="z2-table" id="rez-final-table">
                         <thead><tr><th>Muster</th><th>Ø RMSSD</th><th></th></tr></thead>
                         <tbody></tbody>

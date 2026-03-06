@@ -1008,12 +1008,29 @@ class App {
 
     async _initResonanzView() {
         this._rezShowSection('rez-home');
+        await this._rezLoadStepCards();
         await this._rezLoadLastResult();
 
-        // Start-Button
-        const startBtn = document.getElementById('rez-start-btn');
-        if (startBtn) {
-            startBtn.onclick = () => this._rezStartTest();
+        // Einzelne Schritt-Buttons
+        [1, 2, 3, 4].forEach(n => {
+            const btn = document.getElementById(`rez-start-${n}`);
+            if (btn) btn.onclick = () => this._rezStartSingleStep(n);
+        });
+
+        // Komplett-Test-Button
+        const fullBtn = document.getElementById('rez-start-full');
+        if (fullBtn) fullBtn.onclick = () => this._rezStartFullTest();
+
+        // Stop-Button (im laufenden Test)
+        const stopBtn = document.getElementById('rez-stop-btn');
+        if (stopBtn) {
+            stopBtn.onclick = () => {
+                this.resonanzTest?.stop();
+                if (this.resonanzPacer) this.resonanzPacer.stop();
+                clearInterval(this._rezTicker);
+                this._rezShowSection('rez-home');
+                this._rezLoadStepCards();
+            };
         }
 
         // Wenn Test bereits läuft: Running-View wiederherstellen
@@ -1023,41 +1040,57 @@ class App {
         }
     }
 
-    _rezStartTest() {
-        if (!this.ble.isConnected) {
-            alert('Polar H10 muss verbunden sein.');
-            return;
-        }
-
-        this.resonanzTest = new ResonanzTest(this.hrv, this.db);
-
-        this.resonanzTest.onPatternStart = (step, idx, pattern, total) => {
-            this._rezOnPatternStart(step, idx, pattern, total);
+    _rezSetupCallbacks() {
+        this.resonanzTest.onPatternStart = (step, idx, pattern, total, step4Phase) => {
+            this._rezOnPatternStart(step, idx, pattern, total, step4Phase);
         };
         this.resonanzTest.onPhaseChange = (phase) => {
             const badge = document.getElementById('rez-phase-badge');
             if (badge) {
-                badge.textContent  = phase === 'acclimation' ? 'Akklimatisierung' : 'Messung';
+                badge.textContent   = phase === 'acclimation' ? 'Akklimatisierung' : 'Messung';
                 badge.dataset.phase = phase;
             }
         };
         this.resonanzTest.onRmssdSample = (rmssd, avg) => {
             this._rezUpdateRmssd(rmssd, avg);
         };
+        this.resonanzTest.onStep4Progress = () => {
+            this._showToast('Phase 4B: Fein-Scan startet…');
+        };
         this.resonanzTest.onStepDone = (step, results, optimumIdx) => {
             this._rezOnStepDone(step, results, optimumIdx);
         };
-        this.resonanzTest.onComplete = (finalOptimum) => {
-            this._rezOnComplete(finalOptimum);
-        };
+        this.resonanzTest.onComplete = () => {};  // _rezOnStepDone(4) übernimmt die Navigation
+    }
 
+    async _rezStartSingleStep(n) {
+        if (!this.ble.isConnected) {
+            alert('Polar H10 muss verbunden sein.');
+            return;
+        }
+        const prevOptimum = n > 1 ? await this.db.getSetting(`resonanzStep${n - 1}Optimum`) : null;
+        this.resonanzTest = new ResonanzTest(this.hrv, this.db);
+        this._rezSetupCallbacks();
         this.audio.unlock();
         this._rezShowSection('rez-running');
-        this.resonanzTest.start();
+        this.resonanzTest.startStep(n, prevOptimum);
         this._rezStartTicker();
     }
 
-    _rezOnPatternStart(step, idx, pattern, total) {
+    _rezStartFullTest() {
+        if (!this.ble.isConnected) {
+            alert('Polar H10 muss verbunden sein.');
+            return;
+        }
+        this.resonanzTest = new ResonanzTest(this.hrv, this.db);
+        this._rezSetupCallbacks();
+        this.audio.unlock();
+        this._rezShowSection('rez-running');
+        this.resonanzTest.startFullTest();
+        this._rezStartTicker();
+    }
+
+    _rezOnPatternStart(step, idx, pattern, total, step4Phase) {
         // Schritt-Dots aktualisieren
         [1, 2, 3, 4].forEach(n => {
             const dot  = document.getElementById(`rez-dot-${n}`);
@@ -1070,7 +1103,12 @@ class App {
         });
 
         // Schritt-Titel
-        const titles = { 1: 'Schritt 1 · Grob-Scan', 2: 'Schritt 2 · Fein-Scan', 3: 'Schritt 3 · Pausen-Scan', 4: 'Schritt 4 · Verhältnis-Scan' };
+        const titles = {
+            1: 'Schritt 1 · Grob-Scan',
+            2: 'Schritt 2 · Fein-Scan',
+            3: 'Schritt 3 · Verhältnis-Scan',
+            4: step4Phase === 'B' ? 'Schritt 4 · Pausen-Scan (Fein)' : 'Schritt 4 · Pausen-Scan (Grob)',
+        };
         const titleEl = document.getElementById('rez-step-title');
         if (titleEl) titleEl.textContent = titles[step] ?? '';
 
@@ -1139,11 +1177,19 @@ class App {
 
     _rezOnStepDone(step, results, optimumIdx) {
         clearInterval(this._rezTicker);
-        if (this.resonanzPacer) { this.resonanzPacer.stop(); }
+        if (this.resonanzPacer) this.resonanzPacer.stop();
+
+        // Schritt 4: kombinierte 4A+4B-Ergebnisse direkt zur finalen Ansicht
+        if (step === 4) {
+            const allResults = this.resonanzTest.getResults(4);
+            const bestIdx    = allResults.reduce((bi, r, i) => r.avgRmssd > allResults[bi].avgRmssd ? i : bi, 0);
+            this._rezOnComplete(allResults[bestIdx]);
+            return;
+        }
 
         this._rezShowSection('rez-step-done');
 
-        const stepNames = { 1: 'Grob-Scan', 2: 'Fein-Scan', 3: 'Pausen-Scan', 4: 'Verhältnis-Scan' };
+        const stepNames = { 1: 'Grob-Scan', 2: 'Fein-Scan', 3: 'Verhältnis-Scan' };
         const titleEl   = document.getElementById('rez-done-title');
         const subEl     = document.getElementById('rez-done-sub');
         const tbody     = document.querySelector('#rez-step-table tbody');
@@ -1165,38 +1211,48 @@ class App {
             `).join('');
         }
 
-        if (step === 4) {
-            // Letzter Schritt — "Weiter" zeigt Ergebnis
-            const nextBtn = document.getElementById('rez-next-btn');
+        const nextBtn   = document.getElementById('rez-next-btn');
+        const cancelBtn = document.getElementById('rez-cancel-btn');
+
+        if (this.resonanzTest.stepOnly) {
+            // Einzelner Schritt: zurück zur Übersicht
             if (nextBtn) {
-                nextBtn.textContent = 'Ergebnis anzeigen';
-                nextBtn.onclick = () => this._rezOnComplete(optimum);
+                nextBtn.textContent = 'Zur Übersicht';
+                nextBtn.style.display = '';
+                nextBtn.onclick = () => {
+                    this.resonanzTest = null;
+                    this._rezShowSection('rez-home');
+                    this._rezLoadStepCards();
+                    this._rezLoadLastResult();
+                };
             }
+            if (cancelBtn) cancelBtn.style.display = 'none';
         } else {
+            // Komplett-Test: weiter zum nächsten Schritt
             const nextNames = {
                 1: 'Schritt 2: Fein-Scan starten',
-                2: 'Schritt 3: Pausen-Scan starten',
-                3: 'Schritt 4: Verhältnis-Scan starten',
+                2: 'Schritt 3: Verhältnis-Scan starten',
+                3: 'Schritt 4: Pausen-Scan starten',
             };
-            const nextBtn = document.getElementById('rez-next-btn');
             if (nextBtn) {
                 nextBtn.textContent = nextNames[step] ?? 'Weiter';
+                nextBtn.style.display = '';
                 nextBtn.onclick = () => {
                     this._rezShowSection('rez-running');
                     this.resonanzTest.resumeNextStep();
                     this._rezStartTicker();
                 };
             }
-        }
-
-        const cancelBtn = document.getElementById('rez-cancel-btn');
-        if (cancelBtn) {
-            cancelBtn.onclick = () => {
-                this.resonanzTest?.stop();
-                this.resonanzTest = null;
-                this._rezShowSection('rez-home');
-                this._rezLoadLastResult();
-            };
+            if (cancelBtn) {
+                cancelBtn.style.display = '';
+                cancelBtn.onclick = () => {
+                    this.resonanzTest?.stop();
+                    this.resonanzTest = null;
+                    this._rezShowSection('rez-home');
+                    this._rezLoadStepCards();
+                    this._rezLoadLastResult();
+                };
+            }
         }
     }
 
@@ -1216,12 +1272,12 @@ class App {
         set('rez-fin-holdin',  r.holdIn  ? s(r.holdIn)  : '0,0 s');
         set('rez-fin-holdout', r.holdOut ? s(r.holdOut) : '0,0 s');
 
-        // Tabelle Schritt 4 (Verhältnis-Muster)
+        // Tabelle Schritt 4 (Pausen-Muster, 4A+4B kombiniert)
         const tbody = document.querySelector('#rez-final-table tbody');
         const tableTitle = document.querySelector('#rez-final-table-wrap .section-title');
-        if (tableTitle) tableTitle.textContent = 'Schritt 4 · Verhältnis-Scan';
+        if (tableTitle) tableTitle.textContent = 'Schritt 4 · Pausen-Scan (alle Muster)';
         if (tbody && this.resonanzTest) {
-            const step4 = this.resonanzTest.results[4] ?? [];
+            const step4 = this.resonanzTest.getResults(4);
             const bestRmssd = step4.length ? Math.max(...step4.map(r => r.avgRmssd)) : 0;
             tbody.innerHTML = step4.map(r => `
                 <tr class="${r.avgRmssd === bestRmssd ? 'rez-best-row' : ''}">
@@ -1249,6 +1305,7 @@ class App {
             backBtn.onclick = async () => {
                 this.resonanzTest = null;
                 this._rezShowSection('rez-home');
+                await this._rezLoadStepCards();
                 await this._rezLoadLastResult();
             };
         }
@@ -1282,6 +1339,36 @@ class App {
             <span style="color:var(--accent-teal);font-weight:700">${r.finalRmssd} ms</span>
         `;
         container.style.display = '';
+    }
+
+    async _rezLoadStepCards() {
+        for (let n = 1; n <= 4; n++) {
+            const optimum  = await this.db.getSetting(`resonanzStep${n}Optimum`);
+            const card     = document.getElementById(`rez-card-${n}`);
+            const resultEl = document.getElementById(`rez-result-${n}`);
+            const valEl    = document.getElementById(`rez-result-val-${n}`);
+            const badge    = document.getElementById(`rez-badge-${n}`);
+
+            if (optimum) {
+                if (resultEl) resultEl.style.display = '';
+                if (valEl) {
+                    valEl.textContent = `${optimum.label ?? ResonanzTest.rhythmToString(optimum.breathRhythm)}  ·  ${optimum.avgRmssd} ms`;
+                }
+                if (card)  card.classList.add('done');
+                if (badge) badge.textContent = '✓';
+            } else {
+                if (resultEl) resultEl.style.display = 'none';
+                if (card)  card.classList.remove('done');
+                if (badge) badge.textContent = String(n);
+            }
+        }
+
+        // Schritte 2–4 sperren, wenn Vorgänger nicht abgeschlossen
+        for (let n = 2; n <= 4; n++) {
+            const prevOpt = await this.db.getSetting(`resonanzStep${n - 1}Optimum`);
+            const card    = document.getElementById(`rez-card-${n}`);
+            if (card) card.classList.toggle('disabled', !prevOpt);
+        }
     }
 
     // ─── Zone-2-View ─────────────────────────────────────────────────────────
