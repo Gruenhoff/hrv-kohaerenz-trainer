@@ -327,7 +327,16 @@
                     </div>
                 </div>
 
-                <!-- Atempacer (Phase 1) -->
+                <!-- Pacer-Toggle (Phase 2 & 3, optional) -->
+                <div id="pacer-toggle-row" class="pacer-toggle-row" style="display:none">
+                    <span class="pacer-toggle-label">🌬️ Atemführung</span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="pacer-phase23-toggle">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <!-- Atempacer (Phase 1 immer, Phase 2/3 per Toggle) -->
                 <div id="pacer-section" class="pacer-card">
                     <div id="pacer-container" class="pacer-orb-host"></div>
                     <div class="pacer-text-row">
@@ -448,9 +457,17 @@
                         </div>
                         <div class="rez-step-time">24 Min</div>
                     </div>
+                    <div class="rez-step-info">
+                        <div class="rez-step-num">4</div>
+                        <div class="rez-step-body">
+                            <div class="rez-step-title">Verhältnis-Scan</div>
+                            <div class="rez-step-desc">Ein:Aus 35:65 · 40:60 · 45:55 · 50:50 · 55:45, Pausen fix · 5 × 4 Min</div>
+                        </div>
+                        <div class="rez-step-time">20 Min</div>
+                    </div>
                 </div>
 
-                <div class="rez-time-hint">⏱ Gesamtdauer ca. 64 Minuten · Polar H10 erforderlich</div>
+                <div class="rez-time-hint">⏱ Gesamtdauer ca. 84 Minuten · Polar H10 erforderlich</div>
 
                 <button class="rez-primary-btn" id="rez-start-btn">Test starten</button>
 
@@ -473,6 +490,8 @@
                         <span class="rez-step-dot" id="rez-dot-2"></span>
                         <span class="rez-step-line" id="rez-line-2"></span>
                         <span class="rez-step-dot" id="rez-dot-3"></span>
+                        <span class="rez-step-line" id="rez-line-3"></span>
+                        <span class="rez-step-dot" id="rez-dot-4"></span>
                     </div>
                     <div id="rez-step-title" class="rez-run-step-title">Schritt 1 · Grob-Scan</div>
                 </div>

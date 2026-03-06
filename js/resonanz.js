@@ -39,7 +39,7 @@ export class ResonanzTest {
 
         this._patterns         = [];
         this._measureSamples   = [];   // RMSSD-Werte der aktuellen Messphase
-        this._results          = { 1: [], 2: [], 3: [] };
+        this._results          = { 1: [], 2: [], 3: [], 4: [] };
         this._step2BaseRhythm  = null; // Wird nach Schritt 2 gesetzt (für Schritt 3)
 
         // ── Callbacks (werden von app.js belegt) ────────────────────────────
@@ -93,7 +93,7 @@ export class ResonanzTest {
         if (this._active) return;
         this._active     = true;
         this._step       = 1;
-        this._results    = { 1: [], 2: [], 3: [] };
+        this._results    = { 1: [], 2: [], 3: [], 4: [] };
         this._patterns   = this._buildStep1Patterns();
         this._patternIdx = 0;
         this._runCurrentPattern();
@@ -160,6 +160,34 @@ export class ResonanzTest {
             shortLabel:   p.suffix,
             breathRhythm: { inhale, holdIn: p.holdIn, exhale, holdOut: p.holdOut },
         }));
+    }
+
+    /**
+     * Schritt 4: Verhältnis Einatmen : Ausatmen variieren.
+     * Zyklusdauer (inhale+exhale) bleibt fix aus Schritt 2.
+     * Halt-In und Halt-Out werden aus Schritt-3-Optimum übernommen.
+     * Ratios: 35:65 · 40:60 · 45:55 · 50:50 · 55:45
+     */
+    _buildStep4Patterns(step3Rhythm) {
+        const { inhale, exhale, holdIn, holdOut } = step3Rhythm;
+        const cycleDurationMs = inhale + exhale;   // symmetrischer Zyklus aus Schritt 2
+        const hInS  = (holdIn  / 1000).toFixed(1);
+        const hOutS = (holdOut / 1000).toFixed(1);
+        const pauseStr = (holdIn || holdOut)
+            ? `  ·  H-In ${hInS} s / H-Out ${hOutS} s`
+            : '';
+
+        return [35, 40, 45, 50, 55].map(ratioIn => {
+            const inhaleMs = Math.round(cycleDurationMs * ratioIn / 10000) * 100;
+            const exhaleMs = cycleDurationMs - inhaleMs;
+            const inS  = (inhaleMs / 1000).toFixed(1);
+            const exS  = (exhaleMs / 1000).toFixed(1);
+            return {
+                label:        `${ratioIn}:${100 - ratioIn}  ·  ${inS} s Ein / ${exS} s Aus${pauseStr}`,
+                shortLabel:   `${ratioIn}:${100 - ratioIn}  (${inS} s / ${exS} s)`,
+                breathRhythm: { inhale: inhaleMs, holdIn, exhale: exhaleMs, holdOut },
+            };
+        });
     }
 
     // ─── Ablauf ───────────────────────────────────────────────────────────────
@@ -233,7 +261,7 @@ export class ResonanzTest {
         const doneStep = this._step;
 
         // Nächsten Schritt vorbereiten (aber noch nicht starten)
-        if (doneStep < 3) {
+        if (doneStep < 4) {
             this._step++;
             this._patternIdx = 0;
             if (this._step === 2) {
@@ -242,13 +270,16 @@ export class ResonanzTest {
                 // Bestes Muster aus Schritt 2 als Basis für Pausen
                 this._step2BaseRhythm = optimum.breathRhythm;
                 this._patterns = this._buildStep3Patterns(this._step2BaseRhythm);
+            } else if (this._step === 4) {
+                // Bestes Muster aus Schritt 3 (mit Pausen) als Basis für Verhältnis-Scan
+                this._patterns = this._buildStep4Patterns(optimum.breathRhythm);
             }
         }
 
         if (this.onStepDone) this.onStepDone(doneStep, stepResults, optimumIdx);
 
-        // Nach Schritt 3: Ergebnis speichern
-        if (doneStep === 3) {
+        // Nach Schritt 4: Ergebnis speichern
+        if (doneStep === 4) {
             this._saveAndFinish(optimum);
         }
     }
@@ -259,6 +290,7 @@ export class ResonanzTest {
             step1:       this._results[1],
             step2:       this._results[2],
             step3:       this._results[3],
+            step4:       this._results[4],
             finalRhythm: finalOptimum.breathRhythm,
             finalRmssd:  finalOptimum.avgRmssd,
         };

@@ -369,6 +369,34 @@ class App {
         const stopBtn = document.getElementById('session-stop-btn');
         if (stopBtn) stopBtn.addEventListener('click', () => this._stopSession());
 
+        // Pacer-Toggle Phase 2/3
+        const pacerPhase23Toggle = document.getElementById('pacer-phase23-toggle');
+        if (pacerPhase23Toggle) {
+            pacerPhase23Toggle.addEventListener('change', (e) => {
+                const sec = document.getElementById('pacer-section');
+                if (!sec) return;
+                if (e.target.checked) {
+                    sec.style.display = '';
+                    // Pacer starten falls noch nicht aktiv
+                    if (!this.pacer || !this.pacer.isRunning) {
+                        const container  = document.getElementById('pacer-container');
+                        const labelEl    = document.getElementById('breath-phase-label');
+                        const countdownEl = document.getElementById('breath-countdown');
+                        if (container) {
+                            if (this.pacer) this.pacer.destroy();
+                            this.pacer = new BreathPacer(
+                                container, this.session.breathRhythm, labelEl, countdownEl, this.audio
+                            );
+                            this.pacer.start();
+                        }
+                    }
+                } else {
+                    sec.style.display = 'none';
+                    if (this.pacer) { this.pacer.stop(); this.pacer = null; }
+                }
+            });
+        }
+
         // Spektrum-Toggle
         const spectrumToggle = document.getElementById('spectrum-toggle');
         if (spectrumToggle) {
@@ -409,7 +437,17 @@ class App {
         const pacerSection  = document.getElementById('pacer-section');
         const anchorSection = document.getElementById('anchor-section');
 
-        if (pacerSection)   pacerSection.style.display  = phase === 1 ? '' : 'none';
+        const pacerToggleRow = document.getElementById('pacer-toggle-row');
+        if (phase === 1) {
+            if (pacerSection)    pacerSection.style.display    = '';
+            if (pacerToggleRow)  pacerToggleRow.style.display  = 'none';
+        } else {
+            // Phase 2/3: Pacer nur wenn Toggle aktiv
+            const tog = document.getElementById('pacer-phase23-toggle');
+            const showPacer = tog?.checked ?? false;
+            if (pacerSection)    pacerSection.style.display    = showPacer ? '' : 'none';
+            if (pacerToggleRow)  pacerToggleRow.style.display  = '';
+        }
         if (anchorSection)  anchorSection.style.display = (phase === 2 || phase === 3) ? '' : 'none';
 
         // Dauer-Selektor phasenspezifisch aktualisieren
@@ -1021,7 +1059,7 @@ class App {
 
     _rezOnPatternStart(step, idx, pattern, total) {
         // Schritt-Dots aktualisieren
-        [1, 2, 3].forEach(n => {
+        [1, 2, 3, 4].forEach(n => {
             const dot  = document.getElementById(`rez-dot-${n}`);
             const line = document.getElementById(`rez-line-${n}`);
             if (dot) {
@@ -1032,7 +1070,7 @@ class App {
         });
 
         // Schritt-Titel
-        const titles = { 1: 'Schritt 1 · Grob-Scan', 2: 'Schritt 2 · Fein-Scan', 3: 'Schritt 3 · Pausen-Scan' };
+        const titles = { 1: 'Schritt 1 · Grob-Scan', 2: 'Schritt 2 · Fein-Scan', 3: 'Schritt 3 · Pausen-Scan', 4: 'Schritt 4 · Verhältnis-Scan' };
         const titleEl = document.getElementById('rez-step-title');
         if (titleEl) titleEl.textContent = titles[step] ?? '';
 
@@ -1105,7 +1143,7 @@ class App {
 
         this._rezShowSection('rez-step-done');
 
-        const stepNames = { 1: 'Grob-Scan', 2: 'Fein-Scan', 3: 'Pausen-Scan' };
+        const stepNames = { 1: 'Grob-Scan', 2: 'Fein-Scan', 3: 'Pausen-Scan', 4: 'Verhältnis-Scan' };
         const titleEl   = document.getElementById('rez-done-title');
         const subEl     = document.getElementById('rez-done-sub');
         const tbody     = document.querySelector('#rez-step-table tbody');
@@ -1127,7 +1165,7 @@ class App {
             `).join('');
         }
 
-        if (step === 3) {
+        if (step === 4) {
             // Letzter Schritt — "Weiter" zeigt Ergebnis
             const nextBtn = document.getElementById('rez-next-btn');
             if (nextBtn) {
@@ -1135,7 +1173,11 @@ class App {
                 nextBtn.onclick = () => this._rezOnComplete(optimum);
             }
         } else {
-            const nextNames = { 1: 'Schritt 2: Fein-Scan starten', 2: 'Schritt 3: Pausen-Scan starten' };
+            const nextNames = {
+                1: 'Schritt 2: Fein-Scan starten',
+                2: 'Schritt 3: Pausen-Scan starten',
+                3: 'Schritt 4: Verhältnis-Scan starten',
+            };
             const nextBtn = document.getElementById('rez-next-btn');
             if (nextBtn) {
                 nextBtn.textContent = nextNames[step] ?? 'Weiter';
@@ -1174,12 +1216,14 @@ class App {
         set('rez-fin-holdin',  r.holdIn  ? s(r.holdIn)  : '0,0 s');
         set('rez-fin-holdout', r.holdOut ? s(r.holdOut) : '0,0 s');
 
-        // Tabelle Schritt 3 (alle Pause-Muster)
+        // Tabelle Schritt 4 (Verhältnis-Muster)
         const tbody = document.querySelector('#rez-final-table tbody');
+        const tableTitle = document.querySelector('#rez-final-table-wrap .section-title');
+        if (tableTitle) tableTitle.textContent = 'Schritt 4 · Verhältnis-Scan';
         if (tbody && this.resonanzTest) {
-            const step3 = this.resonanzTest.results[3] ?? [];
-            const bestRmssd = Math.max(...step3.map(r => r.avgRmssd));
-            tbody.innerHTML = step3.map(r => `
+            const step4 = this.resonanzTest.results[4] ?? [];
+            const bestRmssd = step4.length ? Math.max(...step4.map(r => r.avgRmssd)) : 0;
+            tbody.innerHTML = step4.map(r => `
                 <tr class="${r.avgRmssd === bestRmssd ? 'rez-best-row' : ''}">
                     <td>${r.shortLabel ?? r.label}</td>
                     <td class="${r.avgRmssd === bestRmssd ? 'rez-best-val' : ''}">${r.avgRmssd} ms</td>

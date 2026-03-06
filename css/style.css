@@ -1682,6 +1682,22 @@ input:checked + .toggle-slider::before { transform: translateX(16px); background
     border-color: rgba(255, 68, 68, 0.7);
 }
 
+/* ─── Pacer-Toggle (Phase 2/3) ───────────────────────── */
+.pacer-toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 0.4rem 1.25rem;
+    padding: 0.6rem 0.9rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+.pacer-toggle-label {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
 /* ─── Session-Setup: Start-Button ────────────────────── */
 #session-start-btn {
     display: block;
