@@ -1702,6 +1702,304 @@ input:checked + .toggle-slider::before { transform: translateX(16px); background
 .quality-low   { background: rgba(255,68,68,0.1);  color: #ff6666;            border: 1px solid rgba(255,68,68,0.2); }
 
 /* ═══════════════════════════════════════════════════════════
+   RESONANZTEST View
+   ═══════════════════════════════════════════════════════════ */
+
+.rez-header {
+    padding: 1.25rem 1.25rem 0.75rem;
+}
+.rez-header h2 {
+    font-size: 1.3rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.25rem;
+}
+.rez-subhead {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+/* ─── Schritt-Übersicht ──────────────────────────────────── */
+.rez-steps-overview {
+    margin: 0 1.25rem 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+.rez-step-info {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.8rem 0.9rem;
+}
+.rez-step-num {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: rgba(0,212,255,0.12);
+    border: 1px solid rgba(0,212,255,0.25);
+    color: var(--accent-cyan);
+    font-size: 0.8rem;
+    font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+.rez-step-body {
+    flex: 1;
+}
+.rez-step-title {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.15rem;
+}
+.rez-step-desc {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+.rez-step-time {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.rez-time-hint {
+    margin: 0 1.25rem 0.9rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    text-align: center;
+    padding: 0.5rem;
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+}
+
+.rez-primary-btn {
+    display: block;
+    width: calc(100% - 2.5rem);
+    margin: 0.5rem 1.25rem;
+    padding: 0.85rem 1rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--accent-cyan);
+    background: rgba(0,212,255,0.1);
+    color: var(--accent-cyan);
+    font-size: 0.95rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    transition: var(--transition);
+}
+.rez-primary-btn:hover {
+    background: rgba(0,212,255,0.2);
+    box-shadow: 0 4px 16px rgba(0,212,255,0.2);
+}
+
+.rez-last-card {
+    margin: 0 1.25rem 1.25rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent-teal);
+    border-radius: var(--radius);
+    padding: 0.85rem 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    font-size: 0.85rem;
+}
+
+/* ─── Test läuft: Header ─────────────────────────────────── */
+.rez-run-header {
+    padding: 1rem 1.25rem 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+.rez-step-indicator {
+    display: flex;
+    align-items: center;
+    gap: 0;
+}
+.rez-step-dot {
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    background: var(--bg-card);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    transition: var(--transition);
+    flex-shrink: 0;
+}
+.rez-step-dot.active { border-color: var(--accent-cyan); background: rgba(0,212,255,0.15); color: var(--accent-cyan); }
+.rez-step-dot.done   { border-color: var(--accent-teal); background: rgba(0,229,160,0.15); color: var(--accent-teal); }
+.rez-step-line {
+    flex: 1;
+    height: 2px;
+    background: var(--border);
+    transition: var(--transition);
+    display: inline-block;
+}
+.rez-step-line.done { background: var(--accent-teal); }
+.rez-run-step-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+/* ─── Aktuelles Muster ───────────────────────────────────── */
+.rez-pattern-card {
+    margin: 0 1.25rem 0.75rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-top: 2px solid var(--accent-cyan);
+    border-radius: var(--radius-lg);
+    padding: 1rem 1.1rem 0.85rem;
+}
+.rez-pattern-name {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.6rem;
+    font-variant-numeric: tabular-nums;
+}
+.rez-phase-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.6rem;
+}
+.rez-phase-badge {
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.2rem 0.7rem;
+    border-radius: 20px;
+    transition: var(--transition);
+}
+.rez-phase-badge[data-phase="acclimation"] {
+    background: rgba(255,221,0,0.1);
+    color: #ffdd00;
+    border: 1px solid rgba(255,221,0,0.2);
+}
+.rez-phase-badge[data-phase="measurement"] {
+    background: rgba(0,229,160,0.12);
+    color: var(--accent-teal);
+    border: 1px solid rgba(0,229,160,0.25);
+}
+.rez-phase-countdown {
+    font-size: 1.8rem;
+    font-weight: 200;
+    color: var(--accent-cyan);
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 0 20px rgba(0,212,255,0.4);
+}
+
+/* Muster-Fortschritts-Punkte */
+.rez-pattern-dots {
+    display: flex;
+    gap: 5px;
+    margin-top: 0.4rem;
+}
+.rez-pdot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    transition: var(--transition);
+}
+.rez-pdot.active { background: var(--accent-cyan); border-color: var(--accent-cyan); }
+.rez-pdot.done   { background: var(--accent-teal); border-color: var(--accent-teal); }
+
+/* ─── RMSSD-Kacheln ──────────────────────────────────────── */
+.rez-rmssd-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+    margin: 0 1.25rem 0.75rem;
+}
+.rez-rmssd-tile {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.85rem 0.75rem;
+    text-align: center;
+}
+.rez-avg-tile { border-color: rgba(0,229,160,0.25); }
+.rez-rmssd-value {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+}
+.rez-avg-tile .rez-rmssd-value { color: var(--accent-teal); }
+.rez-rmssd-label {
+    font-size: 0.68rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-top: 0.3rem;
+}
+
+/* ─── Finales Ergebnis ───────────────────────────────────── */
+.rez-final-card {
+    margin: 0 1.25rem 1rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-top: 3px solid var(--accent-teal);
+    border-radius: var(--radius-lg);
+    padding: 1.25rem 1.1rem;
+}
+.rez-final-rmssd {
+    text-align: center;
+    margin-bottom: 1rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+}
+.rez-final-rmssd span:first-child {
+    font-size: 3.2rem;
+    font-weight: 200;
+    color: var(--accent-teal);
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 0 30px rgba(0,229,160,0.4);
+}
+.rez-final-unit {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-top: 0.2rem;
+}
+.rez-rhythm-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+.rez-rhythm-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.rez-rhythm-label {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+}
+.rez-rhythm-val {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--accent-cyan);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Best-row Markierung in Tabellen */
+.rez-best-row td { background: rgba(0,229,160,0.06); }
+.rez-best-val { color: var(--accent-teal) !important; font-weight: 700 !important; }
+
+/* ═══════════════════════════════════════════════════════════
    ZONE 2 / DFA-alpha1 View
    ═══════════════════════════════════════════════════════════ */
 

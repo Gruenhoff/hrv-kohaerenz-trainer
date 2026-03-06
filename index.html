@@ -412,6 +412,175 @@
         </section>
 
 
+        <!-- ─── RESONANZ ─────────────────────────────────── -->
+        <section id="view-resonanz" class="app-view">
+
+            <!-- ═══ STARTBILDSCHIRM ══════════════════════════════ -->
+            <div id="rez-home">
+                <div class="rez-header">
+                    <h2>Resonanzfrequenz</h2>
+                    <p class="rez-subhead">Finde deinen optimalen Atemrhythmus in 3 Schritten</p>
+                </div>
+
+                <!-- Schritt-Übersicht -->
+                <div class="rez-steps-overview">
+                    <div class="rez-step-info">
+                        <div class="rez-step-num">1</div>
+                        <div class="rez-step-body">
+                            <div class="rez-step-title">Grob-Scan</div>
+                            <div class="rez-step-desc">6,5 · 6,0 · 5,5 · 5,0 · 4,5 Atemz/min · 5 × 4 Min</div>
+                        </div>
+                        <div class="rez-step-time">20 Min</div>
+                    </div>
+                    <div class="rez-step-info">
+                        <div class="rez-step-num">2</div>
+                        <div class="rez-step-body">
+                            <div class="rez-step-title">Fein-Scan</div>
+                            <div class="rez-step-desc">±0,2 um Optimum in 0,1er-Schritten · 5 × 4 Min</div>
+                        </div>
+                        <div class="rez-step-time">20 Min</div>
+                    </div>
+                    <div class="rez-step-info">
+                        <div class="rez-step-num">3</div>
+                        <div class="rez-step-body">
+                            <div class="rez-step-title">Pausen-Scan</div>
+                            <div class="rez-step-desc">Halt-In / Halt-Out 0–2 s, 6 Kombinationen · 6 × 4 Min</div>
+                        </div>
+                        <div class="rez-step-time">24 Min</div>
+                    </div>
+                </div>
+
+                <div class="rez-time-hint">⏱ Gesamtdauer ca. 64 Minuten · Polar H10 erforderlich</div>
+
+                <button class="rez-primary-btn" id="rez-start-btn">Test starten</button>
+
+                <!-- Letztes Ergebnis -->
+                <div id="rez-last-result" style="display:none">
+                    <div class="section-title" style="margin:1rem 1.25rem 0.5rem">Letztes Ergebnis</div>
+                    <div class="rez-last-card" id="rez-last-content"></div>
+                </div>
+            </div><!-- /#rez-home -->
+
+
+            <!-- ═══ TEST LÄUFT ════════════════════════════════════ -->
+            <div id="rez-running" style="display:none">
+
+                <!-- Schritt-Header -->
+                <div class="rez-run-header">
+                    <div class="rez-step-indicator">
+                        <span class="rez-step-dot" id="rez-dot-1"></span>
+                        <span class="rez-step-line" id="rez-line-1"></span>
+                        <span class="rez-step-dot" id="rez-dot-2"></span>
+                        <span class="rez-step-line" id="rez-line-2"></span>
+                        <span class="rez-step-dot" id="rez-dot-3"></span>
+                    </div>
+                    <div id="rez-step-title" class="rez-run-step-title">Schritt 1 · Grob-Scan</div>
+                </div>
+
+                <!-- Aktuelles Muster + Phase -->
+                <div class="rez-pattern-card">
+                    <div class="rez-pattern-name" id="rez-pattern-name">—</div>
+                    <div class="rez-phase-row">
+                        <span class="rez-phase-badge" id="rez-phase-badge" data-phase="acclimation">Akklimatisierung</span>
+                        <span class="rez-phase-countdown" id="rez-phase-countdown">2:00</span>
+                    </div>
+                    <!-- Muster-Fortschritts-Punkte -->
+                    <div class="rez-pattern-dots" id="rez-pattern-dots"></div>
+                </div>
+
+                <!-- BreathPacer -->
+                <div id="rez-pacer-container" class="pacer-orb-host" style="height:220px"></div>
+                <div class="pacer-text-row">
+                    <span id="rez-breath-label" class="breath-phase-lbl">—</span>
+                    <span id="rez-breath-countdown" class="breath-countdown-lbl"></span>
+                </div>
+
+                <!-- RMSSD Live + Messungs-Durchschnitt -->
+                <div class="rez-rmssd-row">
+                    <div class="rez-rmssd-tile">
+                        <div class="rez-rmssd-value" id="rez-live-rmssd">—</div>
+                        <div class="rez-rmssd-label">RMSSD live</div>
+                    </div>
+                    <div class="rez-rmssd-tile rez-avg-tile">
+                        <div class="rez-rmssd-value" id="rez-avg-rmssd">—</div>
+                        <div class="rez-rmssd-label">Ø Messung</div>
+                    </div>
+                </div>
+
+                <button class="btn-stop-session" id="rez-stop-btn">Test abbrechen</button>
+
+            </div><!-- /#rez-running -->
+
+
+            <!-- ═══ SCHRITT-ERGEBNIS ══════════════════════════════ -->
+            <div id="rez-step-done" style="display:none">
+                <div class="rez-header">
+                    <h2 id="rez-done-title">Schritt 1 abgeschlossen</h2>
+                    <p class="rez-subhead" id="rez-done-sub">Bestes Muster: —</p>
+                </div>
+
+                <div class="z2-samples-table-wrap">
+                    <table class="z2-table" id="rez-step-table">
+                        <thead>
+                            <tr><th>Muster</th><th>Ø RMSSD</th><th></th></tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <button class="rez-primary-btn" id="rez-next-btn">Weiter zu Schritt 2</button>
+                <button class="btn-stop-session" id="rez-cancel-btn" style="margin-top:0.5rem">Test beenden</button>
+            </div><!-- /#rez-step-done -->
+
+
+            <!-- ═══ FINALES ERGEBNIS ══════════════════════════════ -->
+            <div id="rez-final" style="display:none">
+                <div class="rez-header">
+                    <h2>Dein optimaler Atemrhythmus</h2>
+                    <p class="rez-subhead">Ermittelt via RMSSD-Optimierung</p>
+                </div>
+
+                <div class="rez-final-card">
+                    <div class="rez-final-rmssd">
+                        <span id="rez-final-rmssd-val">—</span>
+                        <span class="rez-final-unit">ms RMSSD</span>
+                    </div>
+                    <div class="rez-rhythm-grid">
+                        <div class="rez-rhythm-row">
+                            <span class="rez-rhythm-label">Einatmen</span>
+                            <span class="rez-rhythm-val" id="rez-fin-inhale">—</span>
+                        </div>
+                        <div class="rez-rhythm-row" id="rez-fin-holdin-row">
+                            <span class="rez-rhythm-label">Halt-In</span>
+                            <span class="rez-rhythm-val" id="rez-fin-holdin">—</span>
+                        </div>
+                        <div class="rez-rhythm-row">
+                            <span class="rez-rhythm-label">Ausatmen</span>
+                            <span class="rez-rhythm-val" id="rez-fin-exhale">—</span>
+                        </div>
+                        <div class="rez-rhythm-row" id="rez-fin-holdout-row">
+                            <span class="rez-rhythm-label">Halt-Out</span>
+                            <span class="rez-rhythm-val" id="rez-fin-holdout">—</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Vergleichs-Tabelle aller 3 Schritte -->
+                <div class="z2-samples-table-wrap" id="rez-final-table-wrap">
+                    <div class="section-title" style="padding:0.5rem 0 0.5rem">Schritt 3 · Alle Pausen-Muster</div>
+                    <table class="z2-table" id="rez-final-table">
+                        <thead><tr><th>Muster</th><th>Ø RMSSD</th><th></th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <button class="rez-primary-btn" id="rez-apply-btn">Als Atemrhythmus übernehmen</button>
+                <button class="btn-stop-session" id="rez-final-back-btn" style="margin-top:0.5rem">Zurück zur Übersicht</button>
+            </div><!-- /#rez-final -->
+
+        </section><!-- /#view-resonanz -->
+
+
         <!-- ─── ZONE 2 ───────────────────────────────────── -->
         <section id="view-zone2" class="app-view">
 
@@ -659,6 +828,10 @@
         <button class="nav-btn" data-nav="history">
             <span class="nav-icon">📊</span>
             Verlauf
+        </button>
+        <button class="nav-btn" data-nav="resonanz">
+            <span class="nav-icon">🎵</span>
+            Resonanz
         </button>
         <button class="nav-btn" data-nav="zone2">
             <span class="nav-icon">🏔️</span>

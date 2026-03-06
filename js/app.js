@@ -10,6 +10,7 @@ import { BreathPacer }    from './breathpacer.js';
 import { BreathAudio }    from './audio.js';
 import { Dashboard }      from './dashboard.js';
 import { Zone2 }          from './zone2.js';
+import { ResonanzTest }   from './resonanz.js';
 
 // ─── Phasenspezifische Dauer-Optionen ────────────────────────────────────────
 const PHASE_DURATIONS = {
@@ -34,8 +35,11 @@ class App {
         this.ble        = new PolarBluetooth();
         this.hrv        = new HRVAnalyzer();
         this.audio      = new BreathAudio();
-        this.zone2      = null;   // wird nach db.open() initialisiert
-        this.dashboard  = null;
+        this.zone2         = null;   // wird nach db.open() initialisiert
+        this.resonanzTest  = null;
+        this.resonanzPacer = null;
+        this._rezTicker    = null;
+        this.dashboard     = null;
         this.visualizer = null;
         this.spectrum   = null;
         this.pacer      = null;
@@ -191,6 +195,7 @@ class App {
         if (view === 'settings')  this._initSettingsView();
         if (view === 'training')  this._initTrainingView();
         if (view === 'zone2')     this._initZone2View();
+        if (view === 'resonanz')  this._initResonanzView();
     }
 
     // ─── Home-View ───────────────────────────────────────────────────────────
@@ -959,6 +964,280 @@ class App {
         const anchor = { name: name.trim(), prompt: prompt_.trim(), builtin: false };
         await this.db.saveAnchor(anchor);
         this._loadAnchors();
+    }
+
+    // ─── Resonanztest-View ───────────────────────────────────────────────────
+
+    async _initResonanzView() {
+        this._rezShowSection('rez-home');
+        await this._rezLoadLastResult();
+
+        // Start-Button
+        const startBtn = document.getElementById('rez-start-btn');
+        if (startBtn) {
+            startBtn.onclick = () => this._rezStartTest();
+        }
+
+        // Wenn Test bereits läuft: Running-View wiederherstellen
+        if (this.resonanzTest?.active) {
+            this._rezShowSection('rez-running');
+            this._rezStartTicker();
+        }
+    }
+
+    _rezStartTest() {
+        if (!this.ble.isConnected) {
+            alert('Polar H10 muss verbunden sein.');
+            return;
+        }
+
+        this.resonanzTest = new ResonanzTest(this.hrv, this.db);
+
+        this.resonanzTest.onPatternStart = (step, idx, pattern, total) => {
+            this._rezOnPatternStart(step, idx, pattern, total);
+        };
+        this.resonanzTest.onPhaseChange = (phase) => {
+            const badge = document.getElementById('rez-phase-badge');
+            if (badge) {
+                badge.textContent  = phase === 'acclimation' ? 'Akklimatisierung' : 'Messung';
+                badge.dataset.phase = phase;
+            }
+        };
+        this.resonanzTest.onRmssdSample = (rmssd, avg) => {
+            this._rezUpdateRmssd(rmssd, avg);
+        };
+        this.resonanzTest.onStepDone = (step, results, optimumIdx) => {
+            this._rezOnStepDone(step, results, optimumIdx);
+        };
+        this.resonanzTest.onComplete = (finalOptimum) => {
+            this._rezOnComplete(finalOptimum);
+        };
+
+        this.audio.unlock();
+        this._rezShowSection('rez-running');
+        this.resonanzTest.start();
+        this._rezStartTicker();
+    }
+
+    _rezOnPatternStart(step, idx, pattern, total) {
+        // Schritt-Dots aktualisieren
+        [1, 2, 3].forEach(n => {
+            const dot  = document.getElementById(`rez-dot-${n}`);
+            const line = document.getElementById(`rez-line-${n}`);
+            if (dot) {
+                dot.className = 'rez-step-dot' + (n < step ? ' done' : n === step ? ' active' : '');
+                dot.textContent = n < step ? '✓' : n;
+            }
+            if (line) line.className = 'rez-step-line' + (n < step ? ' done' : '');
+        });
+
+        // Schritt-Titel
+        const titles = { 1: 'Schritt 1 · Grob-Scan', 2: 'Schritt 2 · Fein-Scan', 3: 'Schritt 3 · Pausen-Scan' };
+        const titleEl = document.getElementById('rez-step-title');
+        if (titleEl) titleEl.textContent = titles[step] ?? '';
+
+        // Muster-Name
+        const nameEl = document.getElementById('rez-pattern-name');
+        if (nameEl) nameEl.textContent = pattern.label;
+
+        // Phase-Badge zurücksetzen
+        const badge = document.getElementById('rez-phase-badge');
+        if (badge) { badge.textContent = 'Akklimatisierung'; badge.dataset.phase = 'acclimation'; }
+
+        // Countdown zurücksetzen
+        const cntEl = document.getElementById('rez-phase-countdown');
+        if (cntEl) cntEl.textContent = '2:00';
+
+        // Fortschritts-Punkte
+        const dotsWrap = document.getElementById('rez-pattern-dots');
+        if (dotsWrap) {
+            dotsWrap.innerHTML = Array.from({ length: total }, (_, i) =>
+                `<div class="rez-pdot${i < idx ? ' done' : i === idx ? ' active' : ''}"></div>`
+            ).join('');
+        }
+
+        // RMSSD zurücksetzen
+        const avgEl = document.getElementById('rez-avg-rmssd');
+        if (avgEl) avgEl.textContent = '—';
+
+        // BreathPacer neu starten
+        const container = document.getElementById('rez-pacer-container');
+        const labelEl   = document.getElementById('rez-breath-label');
+        const countEl   = document.getElementById('rez-breath-countdown');
+        if (container) {
+            if (this.resonanzPacer) this.resonanzPacer.destroy();
+            this.resonanzPacer = new BreathPacer(
+                container, pattern.breathRhythm, labelEl, countEl, this.audio
+            );
+            this.resonanzPacer.start();
+        }
+    }
+
+    _rezUpdateRmssd(rmssd, avg) {
+        const liveEl = document.getElementById('rez-live-rmssd');
+        const avgEl  = document.getElementById('rez-avg-rmssd');
+        if (liveEl) liveEl.textContent = rmssd > 0 ? rmssd + ' ms' : '—';
+        if (avgEl)  avgEl.textContent  = avg !== null ? avg + ' ms' : '—';
+    }
+
+    _rezStartTicker() {
+        clearInterval(this._rezTicker);
+        this._rezTicker = setInterval(() => {
+            if (!this.resonanzTest?.active) { clearInterval(this._rezTicker); return; }
+
+            // Countdown
+            const rem  = this.resonanzTest.getPhaseRemaining();
+            const m    = Math.floor(rem / 60);
+            const s    = rem % 60;
+            const cntEl = document.getElementById('rez-phase-countdown');
+            if (cntEl) cntEl.textContent = `${m}:${String(s).padStart(2, '0')}`;
+
+            // Live-RMSSD (jede Sekunde aktualisieren)
+            const rmssd = this.resonanzTest.getCurrentRmssd();
+            const avg   = this.resonanzTest.getAvgRmssd();
+            this._rezUpdateRmssd(rmssd, avg);
+        }, 1000);
+    }
+
+    _rezOnStepDone(step, results, optimumIdx) {
+        clearInterval(this._rezTicker);
+        if (this.resonanzPacer) { this.resonanzPacer.stop(); }
+
+        this._rezShowSection('rez-step-done');
+
+        const stepNames = { 1: 'Grob-Scan', 2: 'Fein-Scan', 3: 'Pausen-Scan' };
+        const titleEl   = document.getElementById('rez-done-title');
+        const subEl     = document.getElementById('rez-done-sub');
+        const tbody     = document.querySelector('#rez-step-table tbody');
+
+        if (titleEl) titleEl.textContent = `Schritt ${step} abgeschlossen · ${stepNames[step] ?? ''}`;
+
+        const optimum = results[optimumIdx];
+        if (subEl && optimum) {
+            subEl.textContent = `Bestes Muster: ${optimum.shortLabel ?? optimum.label}  ·  ${optimum.avgRmssd} ms RMSSD`;
+        }
+
+        if (tbody) {
+            tbody.innerHTML = results.map((r, i) => `
+                <tr class="${i === optimumIdx ? 'rez-best-row' : ''}">
+                    <td>${r.shortLabel ?? r.label}</td>
+                    <td class="${i === optimumIdx ? 'rez-best-val' : ''}">${r.avgRmssd} ms</td>
+                    <td>${i === optimumIdx ? '★' : ''}</td>
+                </tr>
+            `).join('');
+        }
+
+        if (step === 3) {
+            // Letzter Schritt — "Weiter" zeigt Ergebnis
+            const nextBtn = document.getElementById('rez-next-btn');
+            if (nextBtn) {
+                nextBtn.textContent = 'Ergebnis anzeigen';
+                nextBtn.onclick = () => this._rezOnComplete(optimum);
+            }
+        } else {
+            const nextNames = { 1: 'Schritt 2: Fein-Scan starten', 2: 'Schritt 3: Pausen-Scan starten' };
+            const nextBtn = document.getElementById('rez-next-btn');
+            if (nextBtn) {
+                nextBtn.textContent = nextNames[step] ?? 'Weiter';
+                nextBtn.onclick = () => {
+                    this._rezShowSection('rez-running');
+                    this.resonanzTest.resumeNextStep();
+                    this._rezStartTicker();
+                };
+            }
+        }
+
+        const cancelBtn = document.getElementById('rez-cancel-btn');
+        if (cancelBtn) {
+            cancelBtn.onclick = () => {
+                this.resonanzTest?.stop();
+                this.resonanzTest = null;
+                this._rezShowSection('rez-home');
+                this._rezLoadLastResult();
+            };
+        }
+    }
+
+    _rezOnComplete(finalOptimum) {
+        clearInterval(this._rezTicker);
+        if (this.resonanzPacer) this.resonanzPacer.stop();
+
+        this._rezShowSection('rez-final');
+
+        const r   = finalOptimum.breathRhythm;
+        const s   = ms => (ms / 1000).toFixed(1) + ' s';
+        const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+
+        set('rez-final-rmssd-val', finalOptimum.avgRmssd);
+        set('rez-fin-inhale',  s(r.inhale));
+        set('rez-fin-exhale',  s(r.exhale));
+        set('rez-fin-holdin',  r.holdIn  ? s(r.holdIn)  : '0,0 s');
+        set('rez-fin-holdout', r.holdOut ? s(r.holdOut) : '0,0 s');
+
+        // Tabelle Schritt 3 (alle Pause-Muster)
+        const tbody = document.querySelector('#rez-final-table tbody');
+        if (tbody && this.resonanzTest) {
+            const step3 = this.resonanzTest.results[3] ?? [];
+            const bestRmssd = Math.max(...step3.map(r => r.avgRmssd));
+            tbody.innerHTML = step3.map(r => `
+                <tr class="${r.avgRmssd === bestRmssd ? 'rez-best-row' : ''}">
+                    <td>${r.shortLabel ?? r.label}</td>
+                    <td class="${r.avgRmssd === bestRmssd ? 'rez-best-val' : ''}">${r.avgRmssd} ms</td>
+                    <td>${r.avgRmssd === bestRmssd ? '★' : ''}</td>
+                </tr>
+            `).join('');
+        }
+
+        // Übernehmen-Button
+        const applyBtn = document.getElementById('rez-apply-btn');
+        if (applyBtn) {
+            applyBtn.onclick = async () => {
+                this.session.breathRhythm = r;
+                await this.db.setSetting('breathRhythm', r);
+                this._updateBreathPreview();
+                this._showToast('Atemrhythmus übernommen!');
+                this._navigateTo('training');
+            };
+        }
+
+        const backBtn = document.getElementById('rez-final-back-btn');
+        if (backBtn) {
+            backBtn.onclick = async () => {
+                this.resonanzTest = null;
+                this._rezShowSection('rez-home');
+                await this._rezLoadLastResult();
+            };
+        }
+    }
+
+    _rezShowSection(id) {
+        ['rez-home', 'rez-running', 'rez-step-done', 'rez-final'].forEach(sid => {
+            const el = document.getElementById(sid);
+            if (el) el.style.display = sid === id ? '' : 'none';
+        });
+    }
+
+    async _rezLoadLastResult() {
+        const container = document.getElementById('rez-last-result');
+        const content   = document.getElementById('rez-last-content');
+        if (!container || !content) return;
+
+        const results = await this.db.getResonanzResults(1);
+        if (!results.length) { container.style.display = 'none'; return; }
+
+        const r    = results[0];
+        const date = new Date(r.date).toLocaleDateString('de-DE', { day: '2-digit', month: 'short', year: 'numeric' });
+        const rh   = r.finalRhythm;
+        const s    = ms => (ms / 1000).toFixed(1) + ' s';
+        const rhythmStr = [s(rh.inhale), rh.holdIn ? s(rh.holdIn) : null, s(rh.exhale), rh.holdOut ? s(rh.holdOut) : null]
+            .filter(Boolean).join(' / ');
+
+        content.innerHTML = `
+            <span style="color:var(--text-secondary)">${date}</span>
+            <span>${rhythmStr}</span>
+            <span style="color:var(--accent-teal);font-weight:700">${r.finalRmssd} ms</span>
+        `;
+        container.style.display = '';
     }
 
     // ─── Zone-2-View ─────────────────────────────────────────────────────────

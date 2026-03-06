@@ -4,7 +4,7 @@
  */
 
 const DB_NAME = 'hrv-trainer';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 const STORES = {
     SESSIONS:  'sessions',
@@ -51,6 +51,15 @@ export class Database {
                 // Baseline-Messung
                 if (!db.objectStoreNames.contains(STORES.BASELINE)) {
                     db.createObjectStore(STORES.BASELINE, { keyPath: 'key' });
+                }
+
+                // Resonanztest-Ergebnisse
+                if (!db.objectStoreNames.contains('resonanzresults')) {
+                    const rz = db.createObjectStore('resonanzresults', {
+                        keyPath: 'id',
+                        autoIncrement: true,
+                    });
+                    rz.createIndex('date', 'date', { unique: false });
                 }
 
                 // Zone-2-Ergebnisse (Feld- und Stufentest)
@@ -162,6 +171,32 @@ export class Database {
 
     async getBaseline() {
         return this._get(STORES.BASELINE, 'baseline');
+    }
+
+    // ─── Resonanztest-Ergebnisse ─────────────────────────────────────────────
+
+    async saveResonanzResult(result) {
+        return this._add('resonanzresults', result);
+    }
+
+    async getResonanzResults(limit = 10) {
+        return new Promise((resolve, reject) => {
+            const tx      = this.db.transaction('resonanzresults', 'readonly');
+            const store   = tx.objectStore('resonanzresults');
+            const index   = store.index('date');
+            const results = [];
+            const request = index.openCursor(null, 'prev');
+            request.onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (cursor && results.length < limit) {
+                    results.push(cursor.value);
+                    cursor.continue();
+                } else {
+                    resolve(results);
+                }
+            };
+            request.onerror = (e) => reject(e.target.error);
+        });
     }
 
     // ─── Zone-2-Ergebnisse ───────────────────────────────────────────────────
