@@ -1068,13 +1068,96 @@ class App {
             alert('Polar H10 muss verbunden sein.');
             return;
         }
-        const prevOptimum = n > 1 ? await this.db.getSetting(`resonanzStep${n - 1}Optimum`) : null;
+        let prevOptimum = n > 1 ? await this.db.getSetting(`resonanzStep${n - 1}Optimum`) : null;
+        if (n > 1 && !prevOptimum) {
+            prevOptimum = await this._rezGetManualInput(n);
+            if (!prevOptimum) return;
+        }
         this.resonanzTest = new ResonanzTest(this.hrv, this.db);
         this._rezSetupCallbacks();
         this.audio.unlock();
         this._rezShowSection('rez-running');
         this.resonanzTest.startStep(n, prevOptimum);
         this._rezStartTicker();
+    }
+
+    /** Zeigt Modal für manuellen Startwert, gibt Promise<prevOptimum|null> zurück */
+    _rezGetManualInput(n) {
+        return new Promise(resolve => {
+            const overlay    = document.getElementById('rez-manual-overlay');
+            const titleEl    = document.getElementById('rez-manual-title');
+            const descEl     = document.getElementById('rez-manual-desc');
+            const bpmInput   = document.getElementById('rez-manual-bpm');
+            const ratioWrap  = document.getElementById('rez-manual-ratio-wrap');
+            const ratioInput = document.getElementById('rez-manual-ratio');
+            const okBtn      = document.getElementById('rez-manual-ok');
+            const cancelBtn  = document.getElementById('rez-manual-cancel');
+
+            const stepNames = { 2: 'Fein-Scan', 3: 'Verhältnis-Scan', 4: 'Pausen-Scan' };
+            const prevNames = { 2: 'Grob-Scan (Schritt 1)', 3: 'Fein-Scan (Schritt 2)', 4: 'Verhältnis-Scan (Schritt 3)' };
+
+            titleEl.textContent = `Schritt ${n} · ${stepNames[n]}`;
+            descEl.textContent  = `Kein gespeichertes Ergebnis für ${prevNames[n]} gefunden. Gib den Startwert manuell ein:`;
+
+            bpmInput.value = '';
+            bpmInput.style.borderColor = '';
+            ratioInput.value = '';
+            ratioInput.style.borderColor = '';
+            ratioWrap.style.display = n === 4 ? '' : 'none';
+            overlay.style.display = 'flex';
+            setTimeout(() => bpmInput.focus(), 50);
+
+            const onKey = (e) => {
+                if (e.key === 'Enter') { e.preventDefault(); okBtn.click(); }
+                if (e.key === 'Escape') close(null);
+            };
+            overlay.addEventListener('keydown', onKey);
+
+            const close = (result) => {
+                overlay.style.display = 'none';
+                okBtn.onclick = null;
+                cancelBtn.onclick = null;
+                overlay.removeEventListener('keydown', onKey);
+                resolve(result);
+            };
+
+            okBtn.onclick = () => {
+                const bpm = parseFloat(bpmInput.value.trim().replace(',', '.'));
+                if (isNaN(bpm) || bpm < 3.5 || bpm > 9.0) {
+                    bpmInput.style.borderColor = '#ff4444';
+                    bpmInput.focus();
+                    return;
+                }
+                bpmInput.style.borderColor = '';
+
+                // BPM → halber Zyklus (gleiche Formel wie resonanz.js:bpmToHalfCycleMs)
+                const ms = Math.round(30000 / bpm / 100) * 100;
+
+                if (n === 2) {
+                    close({ bpm, breathRhythm: { inhale: ms, holdIn: 0, exhale: ms, holdOut: 0 } });
+                    return;
+                }
+                if (n === 3) {
+                    close({ breathRhythm: { inhale: ms, holdIn: 0, exhale: ms, holdOut: 0 } });
+                    return;
+                }
+                // n === 4: zusätzlich Verhältnis
+                const ratioPart = ratioInput.value.trim().split(':')[0].replace(',', '.');
+                const ratioIn   = parseFloat(ratioPart);
+                if (isNaN(ratioIn) || ratioIn < 20 || ratioIn > 80) {
+                    ratioInput.style.borderColor = '#ff4444';
+                    ratioInput.focus();
+                    return;
+                }
+                ratioInput.style.borderColor = '';
+                const cycle    = ms * 2;
+                const inhaleMs = Math.round(cycle * ratioIn / 10000) * 100;
+                const exhaleMs = cycle - inhaleMs;
+                close({ breathRhythm: { inhale: inhaleMs, holdIn: 0, exhale: exhaleMs, holdOut: 0 } });
+            };
+
+            cancelBtn.onclick = () => close(null);
+        });
     }
 
     _rezStartFullTest() {
@@ -1363,11 +1446,10 @@ class App {
             }
         }
 
-        // Schritte 2–4 sperren, wenn Vorgänger nicht abgeschlossen
+        // Schritte 2–4 sind immer klickbar (manueller Startwert möglich)
         for (let n = 2; n <= 4; n++) {
-            const prevOpt = await this.db.getSetting(`resonanzStep${n - 1}Optimum`);
-            const card    = document.getElementById(`rez-card-${n}`);
-            if (card) card.classList.toggle('disabled', !prevOpt);
+            const card = document.getElementById(`rez-card-${n}`);
+            if (card) card.classList.remove('disabled');
         }
     }
 

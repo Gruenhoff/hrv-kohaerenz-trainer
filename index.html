@@ -628,6 +628,26 @@
                 <button class="btn-stop-session" id="rez-final-back-btn" style="margin-top:0.5rem">Zurück zur Übersicht</button>
             </div><!-- /#rez-final -->
 
+            <!-- ═══ MANUELLER STARTWERT ══════════════════════════════ -->
+            <div id="rez-manual-overlay" class="modal-overlay" style="display:none">
+                <div class="modal" style="max-width:340px;width:90%">
+                    <div class="modal-title" id="rez-manual-title">Startwert eingeben</div>
+                    <p id="rez-manual-desc" style="font-size:0.82rem;color:var(--text-secondary);margin:0.5rem 0 1rem"></p>
+                    <div>
+                        <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:0.3rem">Frequenz (Atemz/min)</label>
+                        <input id="rez-manual-bpm" type="text" inputmode="decimal" placeholder="z. B. 4,9"
+                            style="width:100%;padding:0.55rem 0.75rem;background:var(--bg-card);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:var(--text-primary);font-size:1rem;box-sizing:border-box">
+                    </div>
+                    <div id="rez-manual-ratio-wrap" style="display:none;margin-top:0.75rem">
+                        <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:0.3rem">Ein:Aus-Verhältnis (Einatmen-Anteil %)</label>
+                        <input id="rez-manual-ratio" type="text" inputmode="decimal" placeholder="z. B. 40:60 oder 40"
+                            style="width:100%;padding:0.55rem 0.75rem;background:var(--bg-card);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:var(--text-primary);font-size:1rem;box-sizing:border-box">
+                    </div>
+                    <button class="rez-primary-btn" id="rez-manual-ok" style="margin-top:1.25rem">Schritt starten</button>
+                    <button class="btn-stop-session" id="rez-manual-cancel" style="margin-top:0.5rem">Abbrechen</button>
+                </div>
+            </div>
+
         </section><!-- /#view-resonanz -->
 
 
