@@ -9,7 +9,7 @@
 import { computeAlpha1 } from './dfa.js';
 
 const WARMUP_MS        = 10 * 60 * 1000;  // 10 Minuten Einlaufzeit (Feldtest)
-const SAMPLE_INTERVAL  = 30 * 1000;       // Sample alle 30 Sekunden
+const SAMPLE_INTERVAL  = 60 * 1000;       // Sample alle 60 Sekunden
 const HR_WINDOW_FELD   = 120;             // Rollendes 2-Min-HR-Fenster (Feldtest)
 const HR_WINDOW_STUFEN = 60;             // 1-Min-Fenster im Stufentest
 const ALPHA1_BUFFER    = 128;             // Letzte n RR für alpha1
@@ -18,12 +18,14 @@ const ALPHA1_THRESH    = 0.75;            // VT1 / Zone-2-Grenze
 const ALPHA1_VT2       = 0.50;            // VT2 – Frühstopp Stufentest
 
 export const STUFEN = [
-    { name: 'Sehr leicht', durationSec: 180 },
-    { name: 'Leicht',      durationSec: 180 },
-    { name: 'Moderat',     durationSec: 180 },
-    { name: 'Mittel',      durationSec: 180 },
-    { name: 'Erhöht',      durationSec: 180 },
-    { name: 'Hoch',        durationSec: 180 },
+    { name: 'Warm-up',  durationSec: 600, isWarmup:   true },
+    { name: 'Stufe 1',  durationSec: 300 },
+    { name: 'Stufe 2',  durationSec: 300 },
+    { name: 'Stufe 3',  durationSec: 300 },
+    { name: 'Stufe 4',  durationSec: 300 },
+    { name: 'Stufe 5',  durationSec: 300 },
+    { name: 'Stufe 6',  durationSec: 300 },
+    { name: 'Cooldown', durationSec: 600, isCooldown: true },
 ];
 
 export class Zone2 {
@@ -217,13 +219,15 @@ export class Zone2 {
 
     _stufenSampleTick() {
         if (!this._stufenActive) return;
+        const stage  = STUFEN[this._stufenStage];
         const alpha1 = this.getAlpha1();
         const avgHR  = this.getAvgHR(HR_WINDOW_STUFEN);
 
-        if (alpha1 !== null && avgHR !== null) {
+        // Während Warm-up und Cooldown nur RR sammeln, kein Sample aufzeichnen
+        if (!stage.isWarmup && !stage.isCooldown && alpha1 !== null && avgHR !== null) {
             this._stufenSamples.push({
                 stage:     this._stufenStage,
-                stageName: STUFEN[this._stufenStage].name,
+                stageName: stage.name,
                 avgHR,
                 alpha1,
             });

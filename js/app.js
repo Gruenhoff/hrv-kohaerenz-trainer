@@ -1468,8 +1468,8 @@ class App {
             feldToggle.checked = z2.feldActive;
             feldToggle.addEventListener('change', (e) => {
                 if (e.target.checked) {
-                    if (!this.session.active) {
-                        alert('Bitte starte zuerst eine Training-Session.\nDer Feldtest läuft im Hintergrund mit.');
+                    if (!this.ble.isConnected) {
+                        alert('Polar H10 nicht verbunden. Bitte zuerst verbinden.');
                         e.target.checked = false;
                         return;
                     }
@@ -1625,10 +1625,17 @@ class App {
         const wrap  = document.getElementById('z2-stufen-progress');
         if (!wrap) return;
         const stages = z2.stufenStages;
-        wrap.innerHTML = stages.map((st, i) => `
-            <div class="z2-prog-dot" id="z2-dot-${i}">${i + 1}</div>
+        let stageNum = 0;
+        wrap.innerHTML = stages.map((st, i) => {
+            let label;
+            if (st.isWarmup)   label = 'W';
+            else if (st.isCooldown) label = 'C';
+            else               label = ++stageNum;
+            return `
+            <div class="z2-prog-dot" id="z2-dot-${i}">${label}</div>
             ${i < stages.length - 1 ? `<div class="z2-prog-line" id="z2-line-${i}"></div>` : ''}
-        `).join('');
+        `;
+        }).join('');
     }
 
     _z2UpdateStufenLive(stageIdx, samples, alpha1, avgHR) {
