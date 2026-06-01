@@ -98,6 +98,8 @@ export class Database {
             anchorName:      session.anchorName,
             timeToCoherence: session.timeToCoherence ?? null,
             coherenceData:   session.coherenceData ?? [],
+            longestStreak:   session.longestStreak ?? 0,
+            bodyScanBaseline: session.bodyScanBaseline ?? null,
         };
 
         return this._add(STORES.SESSIONS, data);

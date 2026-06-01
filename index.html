@@ -223,16 +223,28 @@
                 <!-- Dauer-Auswahl -->
                 <div class="duration-selector" id="duration-selector"></div>
 
+                <!-- Atemmuster-Bibliothek (nur Phase 1 sichtbar) -->
+                <div class="breath-pattern-row" id="breath-pattern-row">
+                    <label class="breath-pattern-label" for="breath-pattern-select">Atemmuster</label>
+                    <select class="duration-dropdown breath-pattern-select" id="breath-pattern-select">
+                        <option value="coherent">Kohärent (5-5)</option>
+                        <option value="box">Box (4-4-4-4)</option>
+                        <option value="weil">4-7-8 (Schlaf)</option>
+                        <option value="resonant">Resonanz (individuell)</option>
+                    </select>
+                </div>
+                <div class="breath-pattern-desc" id="breath-pattern-desc"></div>
+
                 <!-- Atemrhythmus Vorschau -->
                 <div class="breath-preview-row">
                     <span class="breath-preview-icon">🌬️</span>
                     <span id="breath-preview-text">5000 ms Einatmen · 5000 ms Ausatmen</span>
                 </div>
 
-                <!-- Audio-Einstellungen -->
+                <!-- Sonifikation: Ton folgt Herzfrequenz, Lautstärke folgt Kohärenz -->
                 <div class="audio-row">
-                    <span class="audio-row-icon">🔊</span>
-                    <span class="audio-row-label">Atemführung Audio</span>
+                    <span class="audio-row-icon">♪</span>
+                    <span class="audio-row-label">HF-Sonifikation</span>
                     <label class="toggle-switch">
                         <input type="checkbox" id="audio-toggle" checked>
                         <span class="toggle-slider"></span>
@@ -277,10 +289,80 @@
                     </div>
                 </div>
 
+                <!-- Body-Scan Toggle -->
+                <div class="body-scan-toggle-bar">
+                    <div>
+                        <div class="body-scan-toggle-label">Vor jeder Session: 60s Body-Scan</div>
+                        <div class="body-scan-toggle-sub">Haltung · Aufmerksamkeit aufs Herz · Baseline-RMSSD</div>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="body-scan-toggle" checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
                 <!-- Start-Button -->
                 <button class="btn-session-start" id="session-start-btn">Session starten</button>
 
             </div><!-- /#session-setup -->
+
+            <!-- ═══ POST-SESSION INSIGHT ═══════════════════════════════ -->
+            <div id="post-session-screen" style="display:none">
+                <div class="insight-card">
+                    <div class="insight-headline">Session beendet</div>
+                    <div class="insight-best-minute" id="insight-best-minute">—</div>
+
+                    <div class="insight-grid">
+                        <div class="insight-tile">
+                            <div class="insight-tile-value" id="insight-avg-coh">—</div>
+                            <div class="insight-tile-label">Ø Kohärenz</div>
+                            <div class="insight-tile-delta" id="insight-coh-delta"></div>
+                        </div>
+                        <div class="insight-tile">
+                            <div class="insight-tile-value" id="insight-longest-streak">—</div>
+                            <div class="insight-tile-label">Längste Serie</div>
+                        </div>
+                        <div class="insight-tile">
+                            <div class="insight-tile-value" id="insight-avg-rmssd">—</div>
+                            <div class="insight-tile-label">Ø RMSSD</div>
+                            <div class="insight-tile-delta" id="insight-rmssd-delta"></div>
+                        </div>
+                        <div class="insight-tile">
+                            <div class="insight-tile-value" id="insight-baseline-delta">—</div>
+                            <div class="insight-tile-label">vs Baseline</div>
+                        </div>
+                    </div>
+
+                    <div class="insight-section-title">Spektrogramm-Verlauf</div>
+                    <div class="insight-spectrogram-wrap">
+                        <canvas id="insight-spectrogram"></canvas>
+                        <div class="insight-spectro-legend">
+                            <span class="legend-bar"></span>
+                            <span>Y-Achse: 0–0.4 Hz · X-Achse: Sessionverlauf · Cyan-Linie = Resonanzfrequenz</span>
+                        </div>
+                    </div>
+
+                    <div class="insight-recommendation" id="insight-recommendation"></div>
+
+                    <button class="btn-session-start" id="insight-done-btn">Fertig</button>
+                </div>
+            </div>
+
+            <!-- ═══ BODY-SCAN (60s Vorbereitung) ═══════════════════════ -->
+            <div id="body-scan-screen" style="display:none">
+                <div class="body-scan-card">
+                    <div class="body-scan-step" id="body-scan-step">Sitze aufrecht — entspanne die Schultern</div>
+                    <div class="body-scan-ring-wrap">
+                        <svg class="body-scan-ring-svg" viewBox="0 0 120 120">
+                            <circle class="body-scan-ring-bg" cx="60" cy="60" r="54"/>
+                            <circle id="body-scan-ring" cx="60" cy="60" r="54"/>
+                        </svg>
+                        <div class="body-scan-countdown" id="body-scan-countdown">60</div>
+                    </div>
+                    <div class="body-scan-baseline" id="body-scan-baseline">Baseline-RMSSD wird gemessen…</div>
+                    <button class="body-scan-skip-btn" id="body-scan-skip-btn">Überspringen ▶</button>
+                </div>
+            </div>
 
 
             <!-- ═══ SESSION ACTIVE (während der Session) ══════════ -->
@@ -329,6 +411,15 @@
 
                 <!-- ═══ HEISSLUFTBALLON-FEEDBACK (Phase 3 Selbsterzeugung) ═══ -->
                 <div id="balloon-section" style="display:none">
+
+                    <!-- Resonanz-Anker Toggle -->
+                    <div class="resonance-toggle-row">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="resonance-pulse-toggle" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <span class="resonance-toggle-label">Resonanz-Anker (sanfter Ballonpuls auf <span id="resonance-bpm-label">6.0</span>/min)</span>
+                    </div>
 
                     <div class="balloon-container" id="balloon-container">
                         <!-- Meilenstein: Stern bei ≥25 bpm Amplitude -->
@@ -385,6 +476,10 @@
                         <div class="balloon-stat">
                             <div class="balloon-stat-value" id="balloon-coherence-value">—</div>
                             <div class="balloon-stat-label">Kohärenz</div>
+                        </div>
+                        <div class="balloon-stat">
+                            <div class="balloon-stat-value" id="balloon-streak-value">—</div>
+                            <div class="balloon-stat-label">Streak ≥70%</div>
                         </div>
                     </div>
                 </div><!-- /#balloon-section -->

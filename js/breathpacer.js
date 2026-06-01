@@ -8,7 +8,7 @@ export class BreathPacer {
      * @param {object}      rhythm        – Timing in ms: { inhale, holdIn, exhale, holdOut }
      * @param {HTMLElement} [labelEl]     – Element für Phasenbeschriftung
      * @param {HTMLElement} [countdownEl] – Element für Countdown-Zahl
-     * @param {BreathAudio} [audio]       – Audio-Instanz
+     * @param {object}      [audio]       – (ungenutzt: Audio läuft als HR-Sonifikation)
      */
     constructor(orbContainer, rhythm, labelEl, countdownEl, audio) {
         this.container   = orbContainer;
@@ -58,7 +58,6 @@ export class BreathPacer {
     stop() {
         this.isRunning = false;
         if (this.animFrame) cancelAnimationFrame(this.animFrame);
-        if (this.audio) this.audio.stopTone();
         if (this.labelEl)     this.labelEl.textContent    = 'Pausiert';
         if (this.countdownEl) this.countdownEl.textContent = '';
         this._applyVisual(0, 'holdOut');
@@ -110,13 +109,7 @@ export class BreathPacer {
 
     _onPhaseStart(phase) {
         if (this.onPhaseChange) this.onPhaseChange(phase);
-        if (this.audio) {
-            const r = this.rhythm;
-            if (phase === 'inhale')  this.audio.onInhale(r.inhale);
-            if (phase === 'holdIn')  this.audio.onHoldIn(r.holdIn);
-            if (phase === 'exhale')  this.audio.onExhale(r.exhale);
-            if (phase === 'holdOut') this.audio.onHoldOut(r.holdOut);
-        }
+        // Audio läuft jetzt als HR-Sonifikation, nicht als Atempacer-Sound.
     }
 
     _applyVisual(t, phase) {

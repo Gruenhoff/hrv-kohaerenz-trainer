@@ -7,7 +7,7 @@ import { HRVAnalyzer }    from './hrv.js';
 import { Database }       from './database.js';
 import { RRVisualizer, SpectrumVisualizer, TachogramVisualizer } from './visualizer.js';
 import { BreathPacer }    from './breathpacer.js';
-import { BreathAudio }    from './audio.js';
+import { HRSonification } from './audio.js';
 import { Dashboard }      from './dashboard.js';
 import { Zone2 }          from './zone2.js';
 import { ResonanzTest }   from './resonanz.js';
@@ -24,6 +24,26 @@ const PHASE_DURATIONS = {
     4: { options: [60,  90,  120],       default: 90,   labels: ['60 Sek', '90 Sek', '2 Min'] },
 };
 
+// ─── Atemmuster-Bibliothek ───────────────────────────────────────────────────
+// Alle Werte in Millisekunden; 'resonant' wird zur Laufzeit aus
+// hrv.resonanceFreq berechnet (40 % Einatmen / 60 % Ausatmen).
+const BREATH_PATTERNS = {
+    coherent:  { name: 'Kohärent (5-5)',        desc: '5s ein · 5s aus → 6 Atemzüge/min · Standard',     rhythm: { inhale: 5000, holdIn: 0,    exhale: 5000, holdOut: 0 } },
+    box:       { name: 'Box (4-4-4-4)',         desc: 'Gleichmäßig · Fokus & Stress-Reduktion · Navy SEAL', rhythm: { inhale: 4000, holdIn: 4000, exhale: 4000, holdOut: 4000 } },
+    weil:      { name: '4-7-8 (Schlaf)',        desc: 'Tiefe Beruhigung · Andrew Weil',                  rhythm: { inhale: 4000, holdIn: 7000, exhale: 8000, holdOut: 0 } },
+    resonant:  { name: 'Resonanz (individuell)', desc: 'Aus deinem Resonanztest gemessen',                rhythm: 'dynamic' },
+};
+
+function resonantRhythmFromFreq(freq) {
+    const cycleMs = 1000 / Math.max(0.05, Math.min(0.2, freq));
+    return {
+        inhale:  Math.round(cycleMs * 0.4),
+        holdIn:  0,
+        exhale:  Math.round(cycleMs * 0.6),
+        holdOut: 0,
+    };
+}
+
 // ─── Voreingestellte emotionale Anker ────────────────────────────────────────
 const DEFAULT_ANCHORS = [
     { id: 'dankbarkeit', name: 'Dankbarkeit',      prompt: 'Wofür bin ich gerade dankbar?',                builtin: true },
@@ -38,7 +58,7 @@ class App {
         this.db         = new Database();
         this.ble        = new PolarBluetooth();
         this.hrv        = new HRVAnalyzer();
-        this.audio      = new BreathAudio();
+        this.audio      = new HRSonification();
         this.zone2         = null;   // wird nach db.open() initialisiert
         this.resonanzTest  = null;
         this.resonanzPacer = null;
@@ -49,6 +69,11 @@ class App {
         this.pacer           = null;
         this.tacho           = null;   // Tachogramm für Phase 3
         this.balloonInterval = null;   // RSA-Update-Takt für Phase 3
+        this.pulseRAF        = null;   // Resonanz-Anker-Animation
+        this.pulseEnabled    = true;
+        this.bodyScanTimer   = null;   // Body-Scan-Countdown
+        this.bodyScanEnabled = true;
+        this.bodyScanBaseline = null;  // RMSSD-Baseline aus Body-Scan
 
         // Volles Training (Phase 1 → 2 → 3 automatisch)
         this.fullTraining = {
@@ -81,6 +106,11 @@ class App {
             anchorName:      null,
             breathRhythm:    { inhale: 5000, holdIn: 0, exhale: 5000, holdOut: 0 }, // ms
             firstCoherenceAt: null,
+            currentStreak:    0,   // s in Kohärenz (>=70%) — Reset bei Abfall
+            longestStreak:    0,   // s
+            streakSince:      null,
+            coherenceTimeline: [], // [{tSec, coh}] für Best-Minute & Spektrogramm
+            spectrumTimeline:  [], // [{tSec, power}] für Heatmap
         };
 
         // FFT-Update-Intervall (alle 30s)
@@ -278,6 +308,8 @@ class App {
 
         this.ble.onHeartRate = (bpm) => {
             document.querySelectorAll('.live-hr').forEach(el => el.textContent = bpm);
+            // Sonifikation: Tonhöhe folgt HF
+            if (this.session.active) this.audio.updateHeartRate(bpm);
         };
 
         this.ble.onConnect = () => {
@@ -327,12 +359,12 @@ class App {
         document.getElementById('session-setup').style.display  = '';
         document.getElementById('session-active').style.display = 'none';
 
-        // Audio-Toggle
+        // Sonifikation-Toggle
         const audioToggle = document.getElementById('audio-toggle');
         if (audioToggle) {
             audioToggle.checked = this.audio.enabled;
             audioToggle.addEventListener('change', (e) => {
-                this.audio.enabled = e.target.checked;
+                this.audio.setEnabled(e.target.checked);
                 this.audio.unlock();
             });
         }
@@ -342,7 +374,7 @@ class App {
         if (volSlider) {
             volSlider.value = this.audio.volume;
             volSlider.addEventListener('input', (e) => {
-                this.audio.volume = parseFloat(e.target.value);
+                this.audio.setVolume(parseFloat(e.target.value));
             });
         }
 
@@ -423,6 +455,49 @@ class App {
 
         // Anker-Auswahl vorladen
         this._loadAnchors();
+
+        // Atemmuster-UI
+        this._setupBreathPatternUI();
+        this._restoreBreathPatternSelection();
+
+        // Body-Scan Toggle
+        const bsToggle = document.getElementById('body-scan-toggle');
+        if (bsToggle) {
+            this.db.getSetting('bodyScanEnabled', true).then(v => {
+                this.bodyScanEnabled = !!v;
+                bsToggle.checked = this.bodyScanEnabled;
+            });
+            bsToggle.addEventListener('change', async (e) => {
+                this.bodyScanEnabled = e.target.checked;
+                await this.db.setSetting('bodyScanEnabled', this.bodyScanEnabled);
+            });
+        }
+
+        // Resonanz-Anker (Ballonpuls) Toggle
+        const pulseToggle = document.getElementById('resonance-pulse-toggle');
+        if (pulseToggle) {
+            pulseToggle.addEventListener('change', (e) => {
+                this.pulseEnabled = e.target.checked;
+                if (e.target.checked && this.session.active && this.session.phase === 3) {
+                    this._startResonancePulse();
+                } else {
+                    this._stopResonancePulse();
+                    const wrapper = document.getElementById('balloon-wrapper');
+                    if (wrapper) wrapper.style.setProperty('--pulse-scale', '1');
+                }
+            });
+        }
+    }
+
+    async _restoreBreathPatternSelection() {
+        const select = document.getElementById('breath-pattern-select');
+        if (!select) return;
+        const saved = await this.db.getSetting('breathPattern', 'coherent');
+        if (BREATH_PATTERNS[saved]) {
+            select.value = saved;
+            const descEl = document.getElementById('breath-pattern-desc');
+            if (descEl) descEl.textContent = BREATH_PATTERNS[saved].desc;
+        }
     }
 
     _updateBreathPreview() {
@@ -433,6 +508,29 @@ class App {
         if (r.holdIn)  parts.splice(1, 0, `${r.holdIn} ms Halten`);
         if (r.holdOut) parts.push(`${r.holdOut} ms Pause`);
         el.textContent = parts.join(' · ');
+    }
+
+    /**
+     * Atemmuster anwenden (aus BREATH_PATTERNS).
+     */
+    async _applyBreathPattern(key) {
+        const pattern = BREATH_PATTERNS[key];
+        if (!pattern) return;
+        const rhythm = pattern.rhythm === 'dynamic'
+            ? resonantRhythmFromFreq(this.hrv.resonanceFreq)
+            : { ...pattern.rhythm };
+        this.session.breathRhythm = rhythm;
+        await this.db.setSetting('breathRhythm', rhythm);
+        await this.db.setSetting('breathPattern', key);
+        this._updateBreathPreview();
+        const descEl = document.getElementById('breath-pattern-desc');
+        if (descEl) descEl.textContent = pattern.desc;
+    }
+
+    _setupBreathPatternUI() {
+        const select = document.getElementById('breath-pattern-select');
+        if (!select) return;
+        select.addEventListener('change', (e) => this._applyBreathPattern(e.target.value));
     }
 
     _setSessionPhase(phase) {
@@ -469,6 +567,15 @@ class App {
 
         // Ballon-Section: nur Phase 3
         if (balloonSection) balloonSection.style.display = (phase === 3) ? '' : 'none';
+
+        // Atemmuster-Auswahl: nur Phase 1 (in 2 optional, in 3/4 ausgeblendet)
+        const patternRow  = document.getElementById('breath-pattern-row');
+        const patternDesc = document.getElementById('breath-pattern-desc');
+        const previewRow  = document.querySelector('.breath-preview-row');
+        const showPattern = (phase === 1);
+        if (patternRow)  patternRow.style.display  = showPattern ? '' : 'none';
+        if (patternDesc) patternDesc.style.display = showPattern ? '' : 'none';
+        if (previewRow)  previewRow.style.display  = showPattern ? '' : 'none';
 
         if (anchorSection)  anchorSection.style.display = (phase === 2 || phase === 3) ? '' : 'none';
 
@@ -539,6 +646,255 @@ class App {
         });
     }
 
+    /**
+     * Beste Minute der Session aus coherenceTimeline berechnen.
+     * @returns {{start:number, end:number, avg:number}|null}
+     */
+    _bestMinute(timeline) {
+        if (!timeline || timeline.length < 2) return null;
+        let best = null;
+        // Schiebefenster 60s
+        for (let i = 0; i < timeline.length; i++) {
+            const startT = timeline[i].t;
+            const endT   = startT + 60;
+            const window = timeline.filter(p => p.t >= startT && p.t < endT);
+            if (window.length < 6) continue;       // Mindestens 6 FFT-Samples (~30s)
+            const avg = window.reduce((s, p) => s + p.coh, 0) / window.length;
+            if (!best || avg > best.avg) best = { start: startT, end: endT, avg };
+        }
+        return best;
+    }
+
+    /**
+     * Post-Session Insight-Screen mit Best-Minute, Vergleich,
+     * Spektrogramm-Heatmap und Empfehlung.
+     */
+    async _showSessionInsight(savedSession, baseline) {
+        const screen = document.getElementById('post-session-screen');
+        if (!screen) return;
+
+        const setup = document.getElementById('session-setup');
+        const active = document.getElementById('session-active');
+        if (setup)  setup.style.display  = 'none';
+        if (active) active.style.display = 'none';
+        screen.style.display = '';
+
+        // Best-Minute
+        const best = this._bestMinute(this.session.coherenceTimeline);
+        const bestEl = document.getElementById('insight-best-minute');
+        if (bestEl) {
+            if (best) {
+                const m1 = Math.floor(best.start / 60);
+                const s1 = best.start % 60;
+                const m2 = Math.floor(best.end / 60);
+                const s2 = best.end % 60;
+                bestEl.innerHTML = `Beste Minute: <strong>${m1}:${s1.toString().padStart(2,'0')}–${m2}:${s2.toString().padStart(2,'0')}</strong> mit <strong>${Math.round(best.avg)}%</strong> Ø Kohärenz`;
+            } else {
+                bestEl.textContent = 'Beste Minute: zu wenig Daten';
+            }
+        }
+
+        // Tile-Werte
+        document.getElementById('insight-avg-coh').textContent      = `${savedSession.avgCoherence}%`;
+        document.getElementById('insight-longest-streak').textContent = `${this.session.longestStreak}s`;
+        document.getElementById('insight-avg-rmssd').textContent    = `${savedSession.avgRMSSD} ms`;
+
+        // Baseline-Delta
+        const bdEl = document.getElementById('insight-baseline-delta');
+        if (bdEl) {
+            if (baseline && savedSession.avgRMSSD > 0) {
+                const delta = savedSession.avgRMSSD - baseline;
+                const sign = delta >= 0 ? '+' : '';
+                bdEl.textContent = `${sign}${delta} ms`;
+                bdEl.style.color = delta >= 0 ? 'var(--accent-teal)' : 'var(--coh-mid-low)';
+            } else {
+                bdEl.textContent = '—';
+            }
+        }
+
+        // Vergleich zur letzten Session derselben Phase
+        const prevSessions = await this.db.getSessionsByPhase(savedSession.phase);
+        const prev = prevSessions.filter(s => s.timestamp !== savedSession.timestamp).pop();
+        const cohDeltaEl   = document.getElementById('insight-coh-delta');
+        const rmssdDeltaEl = document.getElementById('insight-rmssd-delta');
+        if (prev) {
+            const cd = savedSession.avgCoherence - prev.avgCoherence;
+            const rd = savedSession.avgRMSSD     - prev.avgRMSSD;
+            if (cohDeltaEl)   { cohDeltaEl.textContent   = `${cd >= 0 ? '+' : ''}${cd}% vs letzte`; cohDeltaEl.style.color = cd >= 0 ? 'var(--accent-teal)' : 'var(--coh-mid-low)'; }
+            if (rmssdDeltaEl) { rmssdDeltaEl.textContent = `${rd >= 0 ? '+' : ''}${rd} ms vs letzte`; rmssdDeltaEl.style.color = rd >= 0 ? 'var(--accent-teal)' : 'var(--coh-mid-low)'; }
+        }
+
+        // Spektrogramm-Heatmap rendern
+        this._renderSpectrogram(this.session.spectrumTimeline);
+
+        // Empfehlung
+        const recEl = document.getElementById('insight-recommendation');
+        if (recEl) recEl.textContent = this._coachingRecommendation(savedSession, this.session.longestStreak, best);
+
+        // Fertig-Button
+        const doneBtn = document.getElementById('insight-done-btn');
+        if (doneBtn) {
+            doneBtn.onclick = () => {
+                screen.style.display = 'none';
+                if (setup) setup.style.display = '';
+            };
+        }
+    }
+
+    /**
+     * Spektrogramm rendern: 2D-Heatmap, X = Zeit (Sessionverlauf),
+     * Y = Frequenz (0–0.4 Hz), Farbe = relative Spektral-Power.
+     * Resonanzfrequenz als horizontale Cyan-Linie eingezeichnet.
+     */
+    _renderSpectrogram(timeline) {
+        const canvas = document.getElementById('insight-spectrogram');
+        if (!canvas || !timeline || timeline.length === 0) return;
+
+        const W = canvas.width  = canvas.clientWidth  || 600;
+        const H = canvas.height = 160;
+        const ctx = canvas.getContext('2d');
+
+        ctx.fillStyle = 'rgba(8,17,31,0.6)';
+        ctx.fillRect(0, 0, W, H);
+
+        const F_MAX = 0.4;   // bis 0.4 Hz (LF + HF)
+        const colCount = timeline.length;
+        const colW = W / colCount;
+
+        // Globale Max-Power für Normalisierung
+        let maxPow = 0;
+        timeline.forEach(s => {
+            for (let i = 0; i < s.freqs.length; i++) {
+                if (s.freqs[i] <= F_MAX && s.power[i] > maxPow) maxPow = s.power[i];
+            }
+        });
+        if (maxPow === 0) return;
+
+        // Spalten zeichnen
+        timeline.forEach((s, idx) => {
+            const x = idx * colW;
+            for (let i = 0; i < s.freqs.length - 1; i++) {
+                const f = s.freqs[i];
+                if (f > F_MAX) break;
+                const y1 = H - (f       / F_MAX) * H;
+                const y2 = H - (s.freqs[i + 1] / F_MAX) * H;
+                const rel = Math.min(1, s.power[i] / maxPow);
+                // Farbe: dunkelblau → cyan → gelb → magenta (heatmap)
+                const hue = 240 - rel * 240;        // 240=blau, 0=rot
+                const light = 15 + rel * 50;
+                ctx.fillStyle = `hsla(${hue}, 80%, ${light}%, ${0.5 + rel * 0.5})`;
+                ctx.fillRect(x, y2, Math.max(colW, 1), y1 - y2);
+            }
+        });
+
+        // Resonanzfrequenz-Linie
+        const resFreq = this.hrv.resonanceFreq;
+        const yRes = H - (resFreq / F_MAX) * H;
+        ctx.strokeStyle = 'rgba(0,212,255,0.9)';
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(0, yRes);
+        ctx.lineTo(W, yRes);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Beschriftung
+        ctx.fillStyle = 'rgba(0,212,255,0.9)';
+        ctx.font = '10px system-ui';
+        ctx.fillText(`Resonanz ${resFreq.toFixed(3)} Hz (${(resFreq*60).toFixed(1)}/min)`, 6, yRes - 4);
+
+        // Achsen-Beschriftung
+        ctx.fillStyle = 'rgba(122,155,192,0.7)';
+        ctx.font = '9px system-ui';
+        ctx.fillText('0.4 Hz', 4, 12);
+        ctx.fillText('0 Hz',   4, H - 4);
+    }
+
+    _coachingRecommendation(s, longestStreak, best) {
+        if (s.avgCoherence >= 75 && longestStreak >= 60) {
+            return '✨ Exzellent. Probier nächstes Mal Phase 3 mit längerer Dauer (+2 Min).';
+        }
+        if (s.avgCoherence >= 55) {
+            return '👍 Solide Session. Halte den Atemrhythmus konstant — die Kohärenz baut sich kumulativ auf.';
+        }
+        if (longestStreak < 15) {
+            return '💡 Tipp: Versuch das Box-Muster (4-4-4-4) oder die individuelle Resonanzfrequenz für gleichmäßigere Wellen.';
+        }
+        return '🌱 Üben hilft — schon kurze Kohärenzphasen trainieren den Vagusnerv. Bleib dran.';
+    }
+
+    /**
+     * Body-Scan (60 s Vorbereitung) — geführte Haltungs- und
+     * Aufmerksamkeitssequenz, dabei Baseline-RMSSD messen.
+     * Resolvet wenn fertig oder übersprungen.
+     */
+    _runBodyScan() {
+        return new Promise((resolve) => {
+            const screen      = document.getElementById('body-scan-screen');
+            const setup       = document.getElementById('session-setup');
+            const stepEl      = document.getElementById('body-scan-step');
+            const countdownEl = document.getElementById('body-scan-countdown');
+            const ring        = document.getElementById('body-scan-ring');
+            const baselineEl  = document.getElementById('body-scan-baseline');
+            const skipBtn     = document.getElementById('body-scan-skip-btn');
+
+            if (!screen) { resolve(); return; }
+
+            // HRV-Puffer für Baseline starten (frischer Buffer)
+            this.hrv.reset();
+
+            setup.style.display   = 'none';
+            screen.style.display  = '';
+
+            const TOTAL = 60;
+            let remaining = TOTAL;
+            const circ = 2 * Math.PI * 54;
+            if (ring) { ring.style.strokeDasharray = circ; ring.style.strokeDashoffset = circ; }
+
+            const STEPS = [
+                { from: 60, to: 45, text: 'Sitze aufrecht — entspanne die Schultern' },
+                { from: 45, to: 30, text: 'Lenke die Aufmerksamkeit auf dein Herz' },
+                { from: 30, to: 15, text: 'Atme natürlich — beobachte den Atem' },
+                { from: 15, to: 0,  text: 'Baseline wird gemessen — bleib weich…' },
+            ];
+
+            const finish = () => {
+                clearInterval(this.bodyScanTimer);
+                this.bodyScanTimer = null;
+                // Baseline-RMSSD (aus den letzten 30s)
+                if (this.hrv.dataSpanSeconds >= 10) {
+                    this.bodyScanBaseline = Math.round(this.hrv.rmssd());
+                } else {
+                    this.bodyScanBaseline = null;
+                }
+                screen.style.display = 'none';
+                resolve();
+            };
+
+            this.bodyScanTimer = setInterval(() => {
+                remaining--;
+                const elapsed = TOTAL - remaining;
+                const progress = elapsed / TOTAL;
+                if (countdownEl) countdownEl.textContent = remaining;
+                if (ring) ring.style.strokeDashoffset = circ * (1 - progress);
+
+                const step = STEPS.find(s => remaining <= s.from && remaining > s.to) || STEPS[STEPS.length - 1];
+                if (stepEl) stepEl.textContent = step.text;
+
+                // Baseline-Vorschau (ab Sekunde 30)
+                if (elapsed >= 30 && baselineEl && this.hrv.dataSpanSeconds >= 10) {
+                    const rmssd = Math.round(this.hrv.rmssd());
+                    baselineEl.textContent = `Baseline-RMSSD: ${rmssd} ms`;
+                }
+
+                if (remaining <= 0) finish();
+            }, 1000);
+
+            if (skipBtn) skipBtn.onclick = finish;
+        });
+    }
+
     async _startSession(phase) {
         if (!this.ble.isConnected) {
             const shouldConnect = confirm('Polar H10 ist nicht verbunden. Jetzt verbinden?');
@@ -554,7 +910,14 @@ class App {
         }
 
         this._setSessionPhase(phase);
-        this.hrv.reset();
+
+        // Optional: 60s Body-Scan vor der Session (Haltung, Aufmerksamkeit, Baseline)
+        if (this.bodyScanEnabled) {
+            await this._runBodyScan();
+        }
+
+        // hrv.reset() nur wenn kein Body-Scan lief (sonst nutzen wir die Baseline-Daten)
+        if (!this.bodyScanEnabled) this.hrv.reset();
 
         this.session.active          = true;
         this.session.startTime       = Date.now();
@@ -562,6 +925,11 @@ class App {
         this.session.rmssdLog        = [];
         this.session.lfhfLog         = [];
         this.session.firstCoherenceAt = null;
+        this.session.currentStreak    = 0;
+        this.session.longestStreak    = 0;
+        this.session.streakSince      = null;
+        this.session.coherenceTimeline = [];
+        this.session.spectrumTimeline  = [];
 
         // Setup ausblenden, Active-Bereich einblenden
         document.getElementById('session-setup').style.display  = 'none';
@@ -624,10 +992,16 @@ class App {
                 const coh = this.hrv.coherenceScore / 100;
                 this._updateBalloon(coh, rsa);
             }, 2000);
+            // Resonanz-Anker-Puls starten (sofern Toggle an)
+            if (this.pulseEnabled) this._startResonancePulse();
         }
 
         // FFT-Analyse alle 5 Sekunden
         this.fftInterval = setInterval(() => this._runFFT(), 5000);
+
+        // Sonifikation starten (Closed-Loop Audio-Biofeedback)
+        this.audio.unlock();
+        this.audio.start();
 
         // Session-Timer
         this._sessionTimer();
@@ -653,6 +1027,8 @@ class App {
         if (this.visualizer) this.visualizer.stop();
         if (this.tacho)     { this.tacho.destroy(); this.tacho = null; }
         if (this.zone2)     this.zone2.stopFeldTestSession();
+        if (this.audio)     this.audio.stop();
+        this._stopResonancePulse();
 
         // Session speichern
         const duration = Math.round((Date.now() - this.session.startTime) / 1000);
@@ -669,7 +1045,7 @@ class App {
             ? Math.round(Math.max(...this.session.rmssdLog))
             : 0;
 
-        await this.db.saveSession({
+        const savedSession = {
             phase:           this.session.phase,
             durationSeconds: duration,
             avgCoherence,
@@ -682,20 +1058,29 @@ class App {
             anchorName:  this.session.anchorName,
             timeToCoherence: this.session.firstCoherenceAt,
             coherenceData: this.session.coherenceLog,
-        });
+            longestStreak: this.session.longestStreak,
+            bodyScanBaseline: this.bodyScanBaseline,
+        };
+        await this.db.saveSession(savedSession);
 
         // Resonanzfrequenz verfeinern und speichern
         const newFreq = this.hrv.updateResonanceFrequency();
         if (newFreq) await this.db.setSetting('resonanceFreq', newFreq);
         await this.db.setSetting('breathRhythm', this.session.breathRhythm);
 
-        // Active ausblenden, Setup wieder anzeigen
+        // Active ausblenden
         document.getElementById('session-active').style.display = 'none';
-        document.getElementById('session-setup').style.display  = '';
         this._updateBreathPreview();
 
         const statusEl = document.getElementById('session-status');
         if (statusEl) statusEl.textContent = '';
+
+        // Post-Session Insight nur bei Einzel-Session (nicht zwischen Volltraining-Phasen)
+        if (!this.fullTraining.active) {
+            await this._showSessionInsight(savedSession, this.bodyScanBaseline);
+        } else {
+            document.getElementById('session-setup').style.display = '';
+        }
 
         // Volles Training: weiter zur nächsten Phase oder Gesamtzusammenfassung
         if (this.fullTraining.active) {
@@ -947,10 +1332,22 @@ class App {
 
         const score   = result.coherenceScore;
         const elapsed = Date.now() - this.session.startTime;
+        const tSec    = Math.round(elapsed / 1000);
 
         // ── Echtzeit-UI: bei jedem Aufruf (alle 5s) ──────────────────────────
         if (this.visualizer) this.visualizer.setCoherence(score);
         if (this.spectrum)   this.spectrum.update(result.frequencies, result.power, result.resonanceFreq);
+
+        // Streak-Tracking (Kohärenz ≥ 70%)
+        this._updateCoherenceStreak(score, tSec);
+
+        // Zeitleiste für Best-Minute & Spektrogramm
+        this.session.coherenceTimeline.push({ t: tSec, coh: score });
+        this.session.spectrumTimeline.push({
+            t: tSec,
+            freqs: Array.from(result.frequencies),
+            power: Array.from(result.power),
+        });
 
         // Phase-3-Ballon: Kohärenz-Farbe und Tachogramm-Farbe aktualisieren
         if (this.session.phase === 3) {
@@ -975,6 +1372,66 @@ class App {
         if (elapsed >= 60000 && Math.round(elapsed / 1000) % 30 === 0) {
             this.session.coherenceLog.push(score);
             this.session.lfhfLog.push(result.lfHfRatio);
+        }
+    }
+
+    /**
+     * Resonanz-Anker: sanfte Skalenpulsation am Ballon auf
+     * individueller Resonanzfrequenz (Standard 0.1 Hz = 6/min).
+     * Visueller Anker ohne Pacer-Zwang — Nutzer kann mitatmen.
+     */
+    _startResonancePulse() {
+        this._stopResonancePulse();
+        const wrapper = document.getElementById('balloon-wrapper');
+        if (!wrapper) return;
+        const startTime = performance.now();
+        const tick = (now) => {
+            if (!this.pulseEnabled || !this.session.active || this.session.phase !== 3) {
+                this._stopResonancePulse();
+                wrapper.style.setProperty('--pulse-scale', '1');
+                return;
+            }
+            const freq = this.hrv.resonanceFreq || 0.1;           // Hz
+            const periodMs = 1000 / freq;
+            const t = ((now - startTime) % periodMs) / periodMs;  // 0..1
+            // Sinus → 0.97..1.03 (3 % Skalierung, sehr subtil)
+            const scale = 1 + 0.03 * Math.sin(t * 2 * Math.PI);
+            wrapper.style.setProperty('--pulse-scale', scale.toFixed(4));
+            this.pulseRAF = requestAnimationFrame(tick);
+        };
+        this.pulseRAF = requestAnimationFrame(tick);
+        // Label aktualisieren
+        const bpmLabel = document.getElementById('resonance-bpm-label');
+        if (bpmLabel) bpmLabel.textContent = (this.hrv.resonanceFreq * 60).toFixed(1);
+    }
+
+    _stopResonancePulse() {
+        if (this.pulseRAF) cancelAnimationFrame(this.pulseRAF);
+        this.pulseRAF = null;
+    }
+
+    /**
+     * Kohärenz-Streak aktualisieren (Schwelle 70%).
+     * Streak zählt durchgängige Sekunden mit Kohärenz ≥ 70%.
+     */
+    _updateCoherenceStreak(score, tSec) {
+        const THRESHOLD = 70;
+        if (score >= THRESHOLD) {
+            if (this.session.streakSince === null) this.session.streakSince = tSec;
+            this.session.currentStreak = tSec - this.session.streakSince;
+            if (this.session.currentStreak > this.session.longestStreak) {
+                this.session.longestStreak = this.session.currentStreak;
+            }
+        } else {
+            this.session.currentStreak = 0;
+            this.session.streakSince   = null;
+        }
+        // Live-Anzeige
+        const streakEl = document.getElementById('balloon-streak-value');
+        if (streakEl) {
+            const s = this.session.currentStreak;
+            streakEl.textContent = s > 0 ? `${s}s` : '—';
+            streakEl.style.color = s > 0 ? 'var(--accent-teal)' : '';
         }
     }
 
@@ -1052,8 +1509,8 @@ class App {
                 ring.style.strokeDashoffset = offset;
                 ring.style.stroke = color;
             }
-            // Hohe Kohärenz: Audio-Chime
-            if (coherence >= 70) this.audio.onCoherenceAchieved();
+            // Sonifikation: Volumen folgt Kohärenz
+            this.audio.updateCoherence(coherence);
         }
         if (lfhf !== undefined) {
             document.querySelectorAll('.live-lfhf').forEach(el => el.textContent = lfhf.toFixed(2));

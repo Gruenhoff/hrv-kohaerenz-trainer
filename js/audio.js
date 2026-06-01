@@ -1,136 +1,131 @@
 /**
- * Atemführungs-Audio – Web Audio API
- * Einatmen: gleitend aufsteigend (A3→E4)
- * Ausatmen: gleitend absteigend  (E4→A3)
- * Halten: kurzer Ton zu Beginn der Haltephase
+ * Herzfrequenz-Sonifikation (Closed-Loop Audio Biofeedback)
+ *
+ * Kontinuierlicher Sinus-Ton, dessen Tonhöhe der momentanen Herzfrequenz folgt.
+ * Während der RSA-Welle steigt die HF beim Einatmen → Ton steigt;
+ * fällt beim Ausatmen → Ton fällt. Der Nutzer *hört* seine HRV.
+ *
+ * Mapping:
+ *   HF 45 bpm  → 180 Hz (tiefes A3-)
+ *   HF 100 bpm → 600 Hz (hohes D5)
+ *   Logarithmisch interpoliert → musikalisch gleichmäßig.
+ *
+ * Lautstärke:
+ *   Kohärenz 0%   → 30% Grundvolumen (immer hörbar)
+ *   Kohärenz 100% → 100% Volumen (klingt voller / präsenter)
+ *
+ * Es gibt keine anderen Töne mehr (keine Atempacer-Sounds, keine Chimes).
  */
-export class BreathAudio {
+export class HRSonification {
     constructor() {
-        this._audioCtx   = null;
+        this._ctx        = null;
+        this._osc        = null;
+        this._gain       = null;
         this.enabled     = true;
-        this.volume      = 0.35;
-        this._lastChime  = 0;
-        this._activeOsc  = null;   // laufender Atemton
-        this._activeGain = null;
+        this.volume      = 0.35;          // Master-Volume vom Slider (0..1)
+        this._isRunning  = false;
+        this._coherence  = 0;             // 0..100
+        this._currentHr  = 65;            // bpm – startet bei realistischer Ruhe-HF
     }
 
     _context() {
-        if (!this._audioCtx) {
-            this._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (!this._ctx) {
+            this._ctx = new (window.AudioContext || window.webkitAudioContext)();
         }
-        if (this._audioCtx.state === 'suspended') this._audioCtx.resume();
-        return this._audioCtx;
+        if (this._ctx.state === 'suspended') this._ctx.resume();
+        return this._ctx;
     }
 
-    // ─── Laufenden Atemton sauber beenden (50 ms Fade-out) ───────────────────
-    _stopActive() {
-        if (!this._activeOsc || !this._activeGain) return;
-        try {
-            const ctx  = this._context();
-            const now  = ctx.currentTime;
-            this._activeGain.gain.cancelScheduledValues(now);
-            this._activeGain.gain.setValueAtTime(this._activeGain.gain.value, now);
-            this._activeGain.gain.linearRampToValueAtTime(0, now + 0.05);
-            this._activeOsc.stop(now + 0.06);
-        } catch (_) {}
-        this._activeOsc  = null;
-        this._activeGain = null;
+    /** HF in bpm → Frequenz in Hz (logarithmische Skala 45–100 bpm → 180–600 Hz) */
+    _hrToFreq(hr) {
+        const HR_MIN = 45,  HR_MAX = 100;
+        const F_MIN  = 180, F_MAX  = 600;
+        const clamped = Math.max(HR_MIN, Math.min(HR_MAX, hr));
+        const t = (clamped - HR_MIN) / (HR_MAX - HR_MIN);
+        // log-Interpolation für angenehme Tonleiter
+        return F_MIN * Math.pow(F_MAX / F_MIN, t);
     }
 
-    // ─── Durchgehend gleitender Ton ──────────────────────────────────────────
-    //   startHz → endHz über durationSec Sekunden, sanfter Ein- und Ausblend
-    _toneGlide(startHz, endHz, durationSec) {
+    /** Aktuelles Ziel-Volumen aus Master-Volume und Kohärenz */
+    _targetGain() {
+        const cohBoost = 0.3 + 0.7 * (this._coherence / 100);  // 30..100 %
+        return this.volume * cohBoost * 0.6;                    // 0.6 = Sicherheits-Cap
+    }
+
+    /** Sonifikation starten (oder unstummschalten wenn schon läuft) */
+    start() {
         if (!this.enabled) return;
-        this._stopActive();
+        if (this._isRunning) return;
+        const ctx = this._context();
+        this._osc  = ctx.createOscillator();
+        this._gain = ctx.createGain();
+        this._osc.type = 'sine';
+        this._osc.frequency.setValueAtTime(this._hrToFreq(this._currentHr), ctx.currentTime);
+        this._gain.gain.setValueAtTime(0, ctx.currentTime);
+        this._gain.gain.linearRampToValueAtTime(this._targetGain(), ctx.currentTime + 0.4);
+        this._osc.connect(this._gain);
+        this._gain.connect(ctx.destination);
+        this._osc.start();
+        this._isRunning = true;
+    }
+
+    /** Sonifikation stoppen (Fade-out 0.3 s) */
+    stop() {
+        if (!this._isRunning) return;
         try {
-            const ctx  = this._context();
-            const now  = ctx.currentTime;
-            const osc  = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.connect(gain);
-            gain.connect(ctx.destination);
-
-            osc.type = 'sine';
-            osc.frequency.setValueAtTime(startHz, now);
-            osc.frequency.linearRampToValueAtTime(endHz, now + durationSec);
-
-            // Hüllkurve: 8 % Einblend, 8 % Ausblend, dazwischen konstant
-            const fade = Math.min(durationSec * 0.08, 0.25);
-            const vol  = this.volume * 0.55;
-            gain.gain.setValueAtTime(0, now);
-            gain.gain.linearRampToValueAtTime(vol, now + fade);
-            gain.gain.setValueAtTime(vol, now + durationSec - fade);
-            gain.gain.linearRampToValueAtTime(0, now + durationSec);
-
-            osc.start(now);
-            osc.stop(now + durationSec);
-
-            this._activeOsc  = osc;
-            this._activeGain = gain;
+            const ctx = this._context();
+            const now = ctx.currentTime;
+            this._gain.gain.cancelScheduledValues(now);
+            this._gain.gain.setValueAtTime(this._gain.gain.value, now);
+            this._gain.gain.linearRampToValueAtTime(0, now + 0.3);
+            this._osc.stop(now + 0.35);
         } catch (_) {}
+        this._osc  = null;
+        this._gain = null;
+        this._isRunning = false;
     }
 
-    // ─── Kurzer Einzel-Ton (für Haltephasen) ─────────────────────────────────
-    _toneShort(frequency, durationSec, volMult = 1) {
-        if (!this.enabled) return;
-        this._stopActive();
-        try {
-            const ctx  = this._context();
-            const now  = ctx.currentTime;
-            const osc  = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.connect(gain);
-            gain.connect(ctx.destination);
-            osc.type = 'sine';
-            osc.frequency.setValueAtTime(frequency, now);
-            const vol = this.volume * volMult;
-            gain.gain.setValueAtTime(0, now);
-            gain.gain.linearRampToValueAtTime(vol, now + 0.05);
-            gain.gain.setValueAtTime(vol, now + Math.max(durationSec - 0.1, 0.05));
-            gain.gain.linearRampToValueAtTime(0, now + durationSec);
-            osc.start(now);
-            osc.stop(now + durationSec);
-        } catch (_) {}
+    /** Neue HF (bpm) → Frequenz sanft auf neuen Wert rampen (~250 ms) */
+    updateHeartRate(bpm) {
+        if (!bpm || bpm < 30 || bpm > 220) return;
+        this._currentHr = bpm;
+        if (!this._isRunning || !this._osc) return;
+        const ctx = this._context();
+        const now = ctx.currentTime;
+        const target = this._hrToFreq(bpm);
+        this._osc.frequency.cancelScheduledValues(now);
+        this._osc.frequency.setValueAtTime(this._osc.frequency.value, now);
+        this._osc.frequency.linearRampToValueAtTime(target, now + 0.25);
     }
 
-    // ─── Phasen-Callbacks (durationMs = Phasendauer in ms) ───────────────────
-
-    // Einatmen: A3 (220 Hz) → E4 (330 Hz), gleitend aufsteigend
-    onInhale(durationMs = 5000) {
-        this._toneGlide(220, 330, durationMs / 1000);
+    /** Neue Kohärenz (0..100) → Volumen sanft anpassen (~500 ms) */
+    updateCoherence(score) {
+        this._coherence = Math.max(0, Math.min(100, score));
+        if (!this._isRunning || !this._gain) return;
+        const ctx = this._context();
+        const now = ctx.currentTime;
+        const target = this._targetGain();
+        this._gain.gain.cancelScheduledValues(now);
+        this._gain.gain.setValueAtTime(this._gain.gain.value, now);
+        this._gain.gain.linearRampToValueAtTime(target, now + 0.5);
     }
 
-    // Halten nach Einatmen: kurzer neutraler Ton zu Beginn
-    onHoldIn(durationMs = 0) {
-        if (durationMs > 100) this._toneShort(330, Math.min(durationMs / 1000, 0.3), 0.7);
-        else this._stopActive();
+    /** Lautstärke vom Slider (0..1) */
+    setVolume(v) {
+        this.volume = Math.max(0, Math.min(1, v));
+        if (this._isRunning && this._gain) {
+            const ctx = this._context();
+            this._gain.gain.linearRampToValueAtTime(this._targetGain(), ctx.currentTime + 0.2);
+        }
     }
 
-    // Ausatmen: E4 (330 Hz) → A3 (220 Hz), gleitend absteigend
-    onExhale(durationMs = 5000) {
-        this._toneGlide(330, 220, durationMs / 1000);
+    /** Ein/Aus */
+    setEnabled(on) {
+        this.enabled = on;
+        if (!on && this._isRunning) this.stop();
     }
 
-    // Halten nach Ausatmen: kurzer tiefer Ton zu Beginn
-    onHoldOut(durationMs = 0) {
-        if (durationMs > 100) this._toneShort(220, Math.min(durationMs / 1000, 0.3), 0.5);
-        else this._stopActive();
-    }
-
-    // Öffentliche Methode – Atemton sofort stoppen (z. B. bei Session-Pause)
-    stopTone() { this._stopActive(); }
-
-    // ─── Kohärenz-Chime: G-Dur-Dreiklang (max. 1× pro 30 s) ─────────────────
-    onCoherenceAchieved() {
-        const now = Date.now();
-        if (now - this._lastChime < 30000) return;
-        this._lastChime = now;
-        [392, 494, 587].forEach((f, i) =>
-            setTimeout(() => this._toneShort(f, 0.5, 0.55), i * 90)
-        );
-    }
-
-    // AudioContext entsperren – muss bei erster User-Geste aufgerufen werden
+    /** AudioContext bei erster User-Geste entsperren */
     unlock() {
         try { this._context(); } catch (_) {}
     }
