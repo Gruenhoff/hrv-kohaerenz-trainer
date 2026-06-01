@@ -16,7 +16,11 @@ import { ResonanzTest }   from './resonanz.js';
 const PHASE_DURATIONS = {
     1: { options: [300, 600, 900, 1200], default: 600,  labels: ['5 Min', '10 Min', '15 Min', '20 Min'] },
     2: { options: [300, 600, 900, 1200], default: 600,  labels: ['5 Min', '10 Min', '15 Min', '20 Min'] },
-    3: { options: [480, 600, 720, 840, 960, 1080, 1200], default: 480, labels: ['8 Min', '10 Min', '12 Min', '14 Min', '16 Min', '18 Min', '20 Min'] },
+    3: {
+        options: [480, 600, 720, 840, 960, 1080, 1200, 1320, 1440, 1560, 1680, 1800],
+        default: 600,
+        labels:  ['8 Min', '10 Min', '12 Min', '14 Min', '16 Min', '18 Min', '20 Min', '22 Min', '24 Min', '26 Min', '28 Min', '30 Min'],
+    },
     4: { options: [60,  90,  120],       default: 90,   labels: ['60 Sek', '90 Sek', '2 Min'] },
 };
 
@@ -493,6 +497,29 @@ class App {
         const config  = PHASE_DURATIONS[phase];
         const current = this.phaseDurations[phase];
 
+        if (phase === 3) {
+            // Phase 3: Dropdown (mehr Optionen, kompakter)
+            container.innerHTML = `
+                <div class="duration-dropdown-wrap">
+                    <label class="duration-dropdown-label" for="duration-dropdown-p3">Sessiondauer</label>
+                    <select class="duration-dropdown" id="duration-dropdown-p3">
+                        ${config.options.map((secs, i) => `
+                            <option value="${secs}" ${secs === current ? 'selected' : ''}>${config.labels[i]}</option>
+                        `).join('')}
+                    </select>
+                </div>
+            `;
+            const select = container.querySelector('#duration-dropdown-p3');
+            select.addEventListener('change', async (e) => {
+                const secs = parseInt(e.target.value);
+                this.session.durationTarget = secs;
+                this.phaseDurations[phase]  = secs;
+                await this.db.setSetting('phaseDurations', this.phaseDurations);
+            });
+            return;
+        }
+
+        // Phasen 1, 2, 4: Buttons
         container.innerHTML = config.options.map((secs, i) => `
             <button class="duration-btn ${secs === current ? 'active' : ''}"
                     data-seconds="${secs}">
@@ -746,6 +773,21 @@ class App {
             if (!container) return;
             const config  = PHASE_DURATIONS[phase];
             const current = this.fullTraining.durations[phase];
+
+            if (phase === 3) {
+                container.innerHTML = `
+                    <select class="duration-dropdown" id="full-duration-dropdown-p3">
+                        ${config.options.map((secs, i) => `
+                            <option value="${secs}" ${secs === current ? 'selected' : ''}>${config.labels[i]}</option>
+                        `).join('')}
+                    </select>
+                `;
+                const select = container.querySelector('#full-duration-dropdown-p3');
+                select.addEventListener('change', (e) => {
+                    this.fullTraining.durations[phase] = parseInt(e.target.value);
+                });
+                return;
+            }
 
             container.innerHTML = config.options.map((secs, i) => `
                 <button class="duration-btn ${secs === current ? 'active' : ''}" data-seconds="${secs}">

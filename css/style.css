@@ -674,6 +674,57 @@ input  { font-family: inherit; }
     color: var(--accent-cyan);
 }
 
+/* Dropdown-Variante (Phase 3) */
+.duration-dropdown-wrap {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    justify-content: center;
+    width: 100%;
+}
+
+.duration-dropdown-label {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+.duration-dropdown {
+    background: var(--bg-card);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.5rem 2.2rem 0.5rem 0.9rem;
+    font-size: 0.95rem;
+    font-family: inherit;
+    cursor: pointer;
+    min-width: 8rem;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='%2300d4ff' d='M4 6l4 4 4-4z'/%3e%3c/svg%3e");
+    background-repeat: no-repeat;
+    background-position: right 0.6rem center;
+    background-size: 14px;
+    transition: var(--transition);
+}
+
+.duration-dropdown:hover {
+    background-color: var(--bg-card-hover);
+    border-color: var(--border-hover);
+}
+
+.duration-dropdown:focus {
+    outline: none;
+    border-color: var(--accent-cyan);
+    box-shadow: 0 0 0 2px rgba(0,212,255,0.15);
+}
+
+.duration-dropdown option {
+    background: var(--bg-card);
+    color: var(--text-primary);
+    padding: 0.5rem;
+}
+
 /* Spektrum */
 #spectrum-container {
     margin: 0 1.25rem;
