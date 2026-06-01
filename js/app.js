@@ -16,7 +16,7 @@ import { ResonanzTest }   from './resonanz.js';
 const PHASE_DURATIONS = {
     1: { options: [300, 600, 900, 1200], default: 600,  labels: ['5 Min', '10 Min', '15 Min', '20 Min'] },
     2: { options: [300, 600, 900, 1200], default: 600,  labels: ['5 Min', '10 Min', '15 Min', '20 Min'] },
-    3: { options: [300, 600, 900, 1200], default: 600,  labels: ['5 Min', '10 Min', '15 Min', '20 Min'] },
+    3: { options: [480, 600, 720, 840, 960, 1080, 1200], default: 480, labels: ['8 Min', '10 Min', '12 Min', '14 Min', '16 Min', '18 Min', '20 Min'] },
     4: { options: [60,  90,  120],       default: 90,   labels: ['60 Sek', '90 Sek', '2 Min'] },
 };
 
@@ -119,7 +119,13 @@ class App {
 
         this.hrv.resonanceFreq = await this.db.getSetting('resonanceFreq', 0.1);
         const saved = await this.db.getSetting('phaseDurations', null);
-        if (saved) this.phaseDurations = saved;
+        if (saved) {
+            this.phaseDurations = saved;
+            // Sicherstellen, dass gespeicherte Phase-3-Dauer noch in den Optionen liegt
+            if (!PHASE_DURATIONS[3].options.includes(this.phaseDurations[3])) {
+                this.phaseDurations[3] = PHASE_DURATIONS[3].default;
+            }
+        }
     }
 
     // ─── Onboarding ──────────────────────────────────────────────────────────
