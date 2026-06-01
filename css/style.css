@@ -2114,6 +2114,109 @@ input:checked + .toggle-slider::before { transform: translateX(16px); background
 }
 .z2-card:hover { border-color: var(--border-hover); }
 
+/* ─── Phase 3: Heißluftballon-Feedback ──────────────────────────────────── */
+
+.balloon-container {
+    position: relative;
+    height: 260px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    overflow: hidden;
+    margin: 0.75rem 0 0.25rem;
+    border-radius: var(--radius-lg);
+    background: linear-gradient(180deg, rgba(0,10,25,0.6) 0%, rgba(8,17,31,0.3) 100%);
+}
+
+.balloon-wrapper {
+    position: absolute;
+    bottom: 5%;
+    transition: bottom 0.8s ease;
+    display: flex;
+    justify-content: center;
+    z-index: 2;
+}
+
+.balloon-svg {
+    width: 100px;
+    height: 140px;
+    filter: drop-shadow(0 0 14px rgba(255,255,255,0.15));
+}
+
+#balloon-body {
+    transition: fill 0.8s ease;
+}
+
+.balloon-milestone {
+    position: absolute;
+    left: 0.5rem;
+    right: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    pointer-events: none;
+    opacity: 0.35;
+    transition: opacity 0.6s ease;
+    z-index: 1;
+}
+
+.milestone-line {
+    flex: 1;
+    border-top: 1px dashed rgba(0, 212, 255, 0.25);
+}
+
+.milestone-icon { font-size: 1rem; line-height: 1; }
+.milestone-label { white-space: nowrap; font-size: 0.65rem; color: var(--text-muted); }
+
+/* Ballon-Schwanken bei niedriger Kohärenz */
+@keyframes balloon-sway {
+    0%, 100% { transform: translateX(0); }
+    25%       { transform: translateX(-6px) rotate(-2deg); }
+    75%       { transform: translateX(6px) rotate(2deg); }
+}
+
+/* Ballon-Aufsteigen bei hoher Kohärenz */
+@keyframes balloon-rise {
+    0%, 100% { transform: translateY(0); }
+    50%       { transform: translateY(-10px); }
+}
+
+.balloon-wrapper.sway { animation: balloon-sway 3s ease-in-out infinite; }
+.balloon-wrapper.rise  { animation: balloon-rise 4s ease-in-out infinite; }
+
+/* Phase-3-Statistiken unter dem Tachogramm */
+.balloon-stats-row {
+    display: flex;
+    justify-content: space-around;
+    gap: 0.5rem;
+    padding: 0.5rem 0 0.25rem;
+    margin: 0 0.25rem;
+}
+
+.balloon-stat {
+    text-align: center;
+    flex: 1;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.5rem 0.25rem;
+}
+
+.balloon-stat-value {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--accent-cyan);
+    font-variant-numeric: tabular-nums;
+}
+
+.balloon-stat-label {
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-top: 0.15rem;
+}
+
 .z2-card-icon {
     font-size: 1.6rem;
     line-height: 1;

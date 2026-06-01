@@ -298,3 +298,117 @@ export class SpectrumVisualizer {
         this._resizeObserver.disconnect();
     }
 }
+
+// ─── Tachogramm-Visualisierung (Phase 3 Selbsterzeugung) ─────────────────────
+// Zeigt rollenden 120s Herzfrequenzverlauf (HR in bpm, nicht RR-Intervalle)
+
+export class TachogramVisualizer {
+    constructor(canvas) {
+        this.canvas = canvas;
+        this.ctx = canvas.getContext('2d');
+        this.hrData = [];
+        this.timestamps = [];
+        this.windowSeconds = 120;
+        this.coherenceScore = 0;
+
+        this._resizeObserver = new ResizeObserver(() => this._resize());
+        this._resizeObserver.observe(canvas.parentElement || canvas);
+        this._resize();
+    }
+
+    _resize() {
+        const parent = this.canvas.parentElement;
+        if (parent) {
+            this.canvas.width  = parent.clientWidth;
+            this.canvas.height = parent.clientHeight || 100;
+        }
+        this._draw();
+    }
+
+    addRR(rrMs) {
+        if (rrMs <= 0) return;
+        const now = Date.now();
+        this.hrData.push(60000 / rrMs);
+        this.timestamps.push(now);
+        const cutoff = now - this.windowSeconds * 1000;
+        while (this.timestamps.length > 1 && this.timestamps[0] < cutoff) {
+            this.timestamps.shift();
+            this.hrData.shift();
+        }
+        this._draw();
+    }
+
+    setCoherence(score) {
+        this.coherenceScore = Math.max(0, Math.min(100, score));
+    }
+
+    _coherenceColor(alpha = 1) {
+        const s = this.coherenceScore;
+        const hue = s < 50 ? (s / 50) * 60 : 60 + ((s - 50) / 50) * 110;
+        return `hsla(${Math.round(hue)},75%,55%,${alpha})`;
+    }
+
+    _draw() {
+        const { canvas, ctx } = this;
+        const W = canvas.width, H = canvas.height;
+        ctx.clearRect(0, 0, W, H);
+
+        if (this.hrData.length < 2) {
+            ctx.strokeStyle = 'rgba(0,212,255,0.2)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([6, 8]);
+            ctx.beginPath();
+            ctx.moveTo(0, H / 2);
+            ctx.lineTo(W, H / 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            return;
+        }
+
+        const min = Math.min(...this.hrData) - 5;
+        const max = Math.max(...this.hrData) + 5;
+        const range = Math.max(max - min, 15);
+        const toY  = (hr) => H - ((hr - min) / range) * H * 0.85 - H * 0.075;
+
+        const now   = Date.now();
+        const startT = now - this.windowSeconds * 1000;
+        const toX   = (ts) => Math.max(0, ((ts - startT) / (this.windowSeconds * 1000)) * W);
+
+        const grad = ctx.createLinearGradient(0, 0, W, 0);
+        grad.addColorStop(0, this._coherenceColor(0.3));
+        grad.addColorStop(1, this._coherenceColor(1.0));
+
+        // Füllbereich
+        ctx.beginPath();
+        ctx.moveTo(toX(this.timestamps[0]), toY(this.hrData[0]));
+        for (let i = 1; i < this.hrData.length; i++) {
+            const x = toX(this.timestamps[i]), y = toY(this.hrData[i]);
+            const px = toX(this.timestamps[i - 1]), py = toY(this.hrData[i - 1]);
+            ctx.bezierCurveTo((px + x) / 2, py, (px + x) / 2, y, x, y);
+        }
+        ctx.lineTo(toX(this.timestamps[this.timestamps.length - 1]), H);
+        ctx.lineTo(toX(this.timestamps[0]), H);
+        ctx.closePath();
+        const fillGrad = ctx.createLinearGradient(0, 0, 0, H);
+        fillGrad.addColorStop(0, this._coherenceColor(0.18));
+        fillGrad.addColorStop(1, this._coherenceColor(0));
+        ctx.fillStyle = fillGrad;
+        ctx.fill();
+
+        // Hauptlinie
+        ctx.beginPath();
+        ctx.moveTo(toX(this.timestamps[0]), toY(this.hrData[0]));
+        for (let i = 1; i < this.hrData.length; i++) {
+            const x = toX(this.timestamps[i]), y = toY(this.hrData[i]);
+            const px = toX(this.timestamps[i - 1]), py = toY(this.hrData[i - 1]);
+            ctx.bezierCurveTo((px + x) / 2, py, (px + x) / 2, y, x, y);
+        }
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    }
+
+    destroy() {
+        this._resizeObserver.disconnect();
+    }
+}

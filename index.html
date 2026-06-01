@@ -327,7 +327,65 @@
                     </div>
                 </div>
 
-                <!-- Pacer-Toggle (Phase 2 & 3, optional) -->
+                <!-- ═══ HEISSLUFTBALLON-FEEDBACK (Phase 3 Selbsterzeugung) ═══ -->
+                <div id="balloon-section" style="display:none">
+
+                    <div class="balloon-container" id="balloon-container">
+                        <!-- Meilenstein: Stern bei ≥25 bpm Amplitude -->
+                        <div class="balloon-milestone" id="milestone-star" style="bottom:83%">
+                            <span class="milestone-icon">⭐</span>
+                            <span class="milestone-line"></span>
+                            <span class="milestone-label">25 bpm</span>
+                        </div>
+                        <!-- Meilenstein: Wolke bei ≥20 bpm -->
+                        <div class="balloon-milestone" id="milestone-cloud-20" style="bottom:67%">
+                            <span class="milestone-icon">☁️</span>
+                            <span class="milestone-line"></span>
+                            <span class="milestone-label">20 bpm</span>
+                        </div>
+                        <!-- Meilenstein: Wolke bei ≥15 bpm -->
+                        <div class="balloon-milestone" id="milestone-cloud-15" style="bottom:50%">
+                            <span class="milestone-icon">☁️</span>
+                            <span class="milestone-line"></span>
+                            <span class="milestone-label">15 bpm</span>
+                        </div>
+                        <!-- Ballon (Höhe & Farbe = visuelles Feedback) -->
+                        <div class="balloon-wrapper" id="balloon-wrapper">
+                            <svg class="balloon-svg" viewBox="0 0 100 140" xmlns="http://www.w3.org/2000/svg">
+                                <ellipse id="balloon-body" cx="50" cy="55" rx="46" ry="52" fill="hsl(0,80%,55%)"/>
+                                <ellipse cx="34" cy="35" rx="14" ry="16" fill="rgba(255,255,255,0.25)"/>
+                                <line x1="35" y1="107" x2="40" y2="118" stroke="rgba(200,180,130,0.7)" stroke-width="1.5"/>
+                                <line x1="65" y1="107" x2="60" y2="118" stroke="rgba(200,180,130,0.7)" stroke-width="1.5"/>
+                                <rect x="36" y="118" width="28" height="18" rx="4" fill="#8B6914"/>
+                                <rect x="36" y="118" width="28" height="7" rx="3" fill="#6B5010"/>
+                            </svg>
+                        </div>
+                    </div>
+
+                    <!-- Tachogramm: rollender 120s Herzfrequenzverlauf -->
+                    <div class="hrv-wave-card">
+                        <span class="hrv-wave-label">Herzfrequenz · 120s</span>
+                        <canvas id="tacho-canvas"></canvas>
+                    </div>
+
+                    <!-- Phase-3-Kurzstatistiken -->
+                    <div class="balloon-stats-row">
+                        <div class="balloon-stat">
+                            <div class="balloon-stat-value" id="balloon-rsa-value">—</div>
+                            <div class="balloon-stat-label">Amplitude bpm</div>
+                        </div>
+                        <div class="balloon-stat">
+                            <div class="balloon-stat-value" id="balloon-coherence-value">—</div>
+                            <div class="balloon-stat-label">Kohärenz</div>
+                        </div>
+                        <div class="balloon-stat">
+                            <div class="balloon-stat-value live-rmssd">—</div>
+                            <div class="balloon-stat-label">RMSSD ms</div>
+                        </div>
+                    </div>
+                </div><!-- /#balloon-section -->
+
+                <!-- Pacer-Toggle (Phase 2 & 4, optional) -->
                 <div id="pacer-toggle-row" class="pacer-toggle-row" style="display:none">
                     <span class="pacer-toggle-label">🌬️ Atemführung</span>
                     <label class="toggle-switch">

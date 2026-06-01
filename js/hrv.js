@@ -96,6 +96,26 @@ export class HRVAnalyzer {
     }
 
     /**
+     * RSA-Amplitude: Herzfrequenz-Spanne (Max−Min) im rollenden Zeitfenster.
+     * Entspricht dem sinusoidalen HF-Ausschlag pro Atemzyklus in bpm.
+     * @param {number} windowSeconds - Fenstergröße (Standard 10s)
+     * @returns {number} Amplitude in bpm
+     */
+    rsaAmplitude(windowSeconds = 10) {
+        if (this.rrBuffer.length < 2) return 0;
+        const lastTs = this.rrTimestamps[this.rrTimestamps.length - 1];
+        const cutoff = lastTs - windowSeconds * 1000;
+        const hrs = [];
+        for (let i = 0; i < this.rrTimestamps.length; i++) {
+            if (this.rrTimestamps[i] >= cutoff && this.rrBuffer[i] > 0) {
+                hrs.push(60000 / this.rrBuffer[i]);
+            }
+        }
+        if (hrs.length < 2) return 0;
+        return Math.max(...hrs) - Math.min(...hrs);
+    }
+
+    /**
      * SDNN (Standard Deviation of NN intervals) in ms
      */
     sdnn(rr = this.rrBuffer) {

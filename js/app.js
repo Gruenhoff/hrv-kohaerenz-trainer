@@ -5,7 +5,7 @@
 import { PolarBluetooth } from './bluetooth.js';
 import { HRVAnalyzer }    from './hrv.js';
 import { Database }       from './database.js';
-import { RRVisualizer, SpectrumVisualizer } from './visualizer.js';
+import { RRVisualizer, SpectrumVisualizer, TachogramVisualizer } from './visualizer.js';
 import { BreathPacer }    from './breathpacer.js';
 import { BreathAudio }    from './audio.js';
 import { Dashboard }      from './dashboard.js';
@@ -40,9 +40,11 @@ class App {
         this.resonanzPacer = null;
         this._rezTicker    = null;
         this.dashboard     = null;
-        this.visualizer = null;
-        this.spectrum   = null;
-        this.pacer      = null;
+        this.visualizer      = null;
+        this.spectrum        = null;
+        this.pacer           = null;
+        this.tacho           = null;   // Tachogramm für Phase 3
+        this.balloonInterval = null;   // RSA-Update-Takt für Phase 3
 
         // Volles Training (Phase 1 → 2 → 3 automatisch)
         this.fullTraining = {
@@ -251,6 +253,7 @@ class App {
             if (accepted && this.session.active) {
                 // Visualizer updaten
                 if (this.visualizer) this.visualizer.addRR(rrMs);
+                if (this.tacho)      this.tacho.addRR(rrMs);
 
                 // RMSSD live updaten
                 const rmssd = this.hrv.rmssd();
@@ -434,20 +437,29 @@ class App {
         if (liveLabelEl) liveLabelEl.textContent = `Phase ${phase} · ${phaseNames[phase]}`;
 
         // UI-Anpassungen je Phase
-        const pacerSection  = document.getElementById('pacer-section');
-        const anchorSection = document.getElementById('anchor-section');
-
+        const pacerSection   = document.getElementById('pacer-section');
+        const anchorSection  = document.getElementById('anchor-section');
         const pacerToggleRow = document.getElementById('pacer-toggle-row');
+        const balloonSection = document.getElementById('balloon-section');
+
         if (phase === 1) {
-            if (pacerSection)    pacerSection.style.display    = '';
-            if (pacerToggleRow)  pacerToggleRow.style.display  = 'none';
+            if (pacerSection)    pacerSection.style.display   = '';
+            if (pacerToggleRow)  pacerToggleRow.style.display = 'none';
+        } else if (phase === 3) {
+            // Selbsterzeugung: Atemführung vollständig ausgeblendet
+            if (pacerSection)    pacerSection.style.display   = 'none';
+            if (pacerToggleRow)  pacerToggleRow.style.display = 'none';
         } else {
-            // Phase 2/3: Pacer nur wenn Toggle aktiv
+            // Phase 2/4: Pacer optional via Toggle
             const tog = document.getElementById('pacer-phase23-toggle');
             const showPacer = tog?.checked ?? false;
-            if (pacerSection)    pacerSection.style.display    = showPacer ? '' : 'none';
-            if (pacerToggleRow)  pacerToggleRow.style.display  = '';
+            if (pacerSection)    pacerSection.style.display   = showPacer ? '' : 'none';
+            if (pacerToggleRow)  pacerToggleRow.style.display = '';
         }
+
+        // Ballon-Section: nur Phase 3
+        if (balloonSection) balloonSection.style.display = (phase === 3) ? '' : 'none';
+
         if (anchorSection)  anchorSection.style.display = (phase === 2 || phase === 3) ? '' : 'none';
 
         // Dauer-Selektor phasenspezifisch aktualisieren
@@ -563,6 +575,24 @@ class App {
             this._updateFeldPanel();
         }
 
+        // Tachogramm für Phase 3
+        if (this.tacho) { this.tacho.destroy(); this.tacho = null; }
+        if (phase === 3) {
+            const tachoCanvas = document.getElementById('tacho-canvas');
+            if (tachoCanvas) this.tacho = new TachogramVisualizer(tachoCanvas);
+        }
+
+        // Ballon-RSA-Update alle 2s (Phase 3)
+        clearInterval(this.balloonInterval);
+        if (phase === 3) {
+            this.balloonInterval = setInterval(() => {
+                if (!this.session.active) return;
+                const rsa = this.hrv.rsaAmplitude();
+                const coh = this.hrv.coherenceScore / 100;
+                this._updateBalloon(coh, rsa);
+            }, 2000);
+        }
+
         // FFT-Analyse alle 5 Sekunden
         this.fftInterval = setInterval(() => this._runFFT(), 5000);
 
@@ -585,9 +615,11 @@ class App {
 
         this.session.active = false;
         clearInterval(this.fftInterval);
-        if (this.pacer) this.pacer.stop();
+        clearInterval(this.balloonInterval);
+        if (this.pacer)     this.pacer.stop();
         if (this.visualizer) this.visualizer.stop();
-        if (this.zone2) this.zone2.stopFeldTestSession();
+        if (this.tacho)     { this.tacho.destroy(); this.tacho = null; }
+        if (this.zone2)     this.zone2.stopFeldTestSession();
 
         // Session speichern
         const duration = Math.round((Date.now() - this.session.startTime) / 1000);
@@ -872,6 +904,13 @@ class App {
         if (this.visualizer) this.visualizer.setCoherence(score);
         if (this.spectrum)   this.spectrum.update(result.frequencies, result.power, result.resonanceFreq);
 
+        // Phase-3-Ballon: Kohärenz-Farbe und Tachogramm-Farbe aktualisieren
+        if (this.session.phase === 3) {
+            if (this.tacho) this.tacho.setCoherence(score);
+            const rsa = this.hrv.rsaAmplitude();
+            this._updateBalloon(score / 100, rsa);
+        }
+
         this._updateLiveStats({
             coherence: score,
             lfhf:      result.lfHfRatio,
@@ -889,6 +928,49 @@ class App {
             this.session.coherenceLog.push(score);
             this.session.lfhfLog.push(result.lfHfRatio);
         }
+    }
+
+    /**
+     * Heißluftballon-Feedback für Phase 3 aktualisieren.
+     * @param {number} coherenceRatio - 0..1 (coherenceScore / 100)
+     * @param {number} rsaAmplitude   - bpm (Herzfrequenz-Spanne im 10s-Fenster)
+     */
+    _updateBalloon(coherenceRatio, rsaAmplitude) {
+        const wrapper = document.getElementById('balloon-wrapper');
+        const body    = document.getElementById('balloon-body');
+        if (!wrapper || !body) return;
+
+        // Höhe: 5 % (Boden) bis 85 % (Decke) → 0–30 bpm Amplitude
+        const heightPct = 5 + Math.min(rsaAmplitude / 30, 1) * 80;
+        wrapper.style.bottom = `${heightPct.toFixed(1)}%`;
+
+        // Farbe per Kohärenz-Ratio → HSL-Gradient laut Spec
+        let hue;
+        const c = coherenceRatio;
+        if      (c < 0.2) hue = 0;
+        else if (c < 0.5) hue = 20  + ((c - 0.2) / 0.3) * 40;   // 20–60°
+        else if (c < 0.8) hue = 90  + ((c - 0.5) / 0.3) * 30;   // 90–120°
+        else              hue = 140 + ((c - 0.8) / 0.2) * 30;    // 140–170°
+        body.setAttribute('fill', `hsl(${Math.round(hue)},80%,55%)`);
+
+        // Animation: Schwanken (niedrige Kohärenz) oder Aufsteigen (hohe Kohärenz)
+        wrapper.classList.remove('sway', 'rise');
+        if      (c < 0.4) wrapper.classList.add('sway');
+        else if (c > 0.7) wrapper.classList.add('rise');
+
+        // Meilenstein-Highlights
+        const star    = document.getElementById('milestone-star');
+        const cloud20 = document.getElementById('milestone-cloud-20');
+        const cloud15 = document.getElementById('milestone-cloud-15');
+        if (star)    star.style.opacity    = rsaAmplitude >= 25 ? '1' : '0.35';
+        if (cloud20) cloud20.style.opacity = rsaAmplitude >= 20 ? '1' : '0.35';
+        if (cloud15) cloud15.style.opacity = rsaAmplitude >= 15 ? '1' : '0.35';
+
+        // Kurzstatistiken
+        const rsaEl = document.getElementById('balloon-rsa-value');
+        const cohEl = document.getElementById('balloon-coherence-value');
+        if (rsaEl) rsaEl.textContent = rsaAmplitude.toFixed(1);
+        if (cohEl) cohEl.textContent = coherenceRatio.toFixed(2);
     }
 
     _updateLiveStats({ rmssd, coherence, lfhf, resonance } = {}) {
