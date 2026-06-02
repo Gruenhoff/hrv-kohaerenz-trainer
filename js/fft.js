@@ -9,10 +9,10 @@ export class FFT {
      * @param {Float64Array} inputReal - Reelle Eingangsdaten
      * @returns {{ real: Float64Array, imag: Float64Array }}
      */
-    static forward(inputReal) {
+    static forward(inputReal, inputImag = null) {
         const n = inputReal.length;
         const real = new Float64Array(inputReal);
-        const imag = new Float64Array(n);
+        const imag = inputImag ? new Float64Array(inputImag) : new Float64Array(n);
 
         // Bit-Reversal Permutation
         let j = 0;
@@ -58,6 +58,26 @@ export class FFT {
         }
 
         return { real, imag };
+    }
+
+    /**
+     * Inverse FFT via Konjugations-Trick: IFFT(X) = conj(FFT(conj(X))) / N
+     * @param {Float64Array} inputReal
+     * @param {Float64Array} inputImag
+     * @returns {{ real: Float64Array, imag: Float64Array }}
+     */
+    static inverse(inputReal, inputImag) {
+        const n = inputReal.length;
+        // Konjugieren: Vorzeichen des Imaginärteils umkehren
+        const conjImag = new Float64Array(n);
+        for (let i = 0; i < n; i++) conjImag[i] = -inputImag[i];
+        // Forward-FFT auf konjugiertem Eingang
+        const { real, imag } = FFT.forward(inputReal, conjImag);
+        // Ergebnis konjugieren und durch N dividieren
+        return {
+            real: Float64Array.from(real, v =>  v / n),
+            imag: Float64Array.from(imag, v => -v / n),
+        };
     }
 
     /**

@@ -2,6 +2,7 @@
  * Echtzeit-Visualisierungs-Modul (Canvas)
  * Zeigt RR-Intervall-Kurve und optionales FFT-Spektrum
  */
+import { FFT } from './fft.js';
 
 export class RRVisualizer {
     /**
@@ -417,9 +418,10 @@ export class TachogramVisualizer {
 // ─── Kohärenz-Welle Overlay (Phase 3) ────────────────────────────────────────
 // Halbtransparentes Canvas über dem Ballon-Container.
 // Untere 35% = Wellen-Zone:
-//   – gestrichelte Referenz-Sinuslinie (adaptiv an Resonanzfrequenz)
-//   – farbige gemessene HR-Kurve (Rot → Gelb → Grün → Türkis je nach Kohärenz)
-//   – Glow-Effekt bei Kohärenz > 70%
+//   – RSA-Kurve: HF-gefiltertes HRV-Signal bei Atemfrequenz (authentisch, leicht variabel)
+//   – rohe HR-Kurve dezent dahinter (kontext-gebend)
+//   – Atemführungs-Punkt am rechten Rand der RSA-Kurve
+//   – Fallback auf berechneten Sinus während Warmup (< 30s Daten)
 
 export class CoherenceWaveOverlay {
     constructor(canvas) {
@@ -427,12 +429,14 @@ export class CoherenceWaveOverlay {
         this.ctx            = canvas.getContext('2d');
         this.hrData         = [];    // [{ ts: ms, hr: bpm }]
         this.windowSec      = 30;
-        this.resonanceFreq  = 0.1;   // Hz, adaptiv
+        this.resonanceFreq  = 0.1;   // Hz, praktische Atemfrequenz (adaptiv)
         this.coherenceScore = 0;
-        this._refOrigin     = null;  // ms – Phasenanker
+        this._refOrigin     = null;  // ms – Phasenanker (für Fallback-Sinus)
         this._smoothAmp     = 8;     // bpm – geglättete RSA-Amplitude
         this._running       = false;
         this._raf           = null;
+        this._rsaCache      = null;  // gecachtes RSA-Ergebnis
+        this._rsaLastTs     = 0;     // Timestamp des letzten Herzschlags bei letzter Berechnung
 
         this._ro = new ResizeObserver(() => this._resize());
         this._ro.observe(canvas.parentElement || canvas);
@@ -459,15 +463,14 @@ export class CoherenceWaveOverlay {
 
     /**
      * FFT-Ergebnis übergeben.
-     * @param {object} result  – FFT-Analyseergebnis aus hrv.frequencyAnalysis()
-     * @param {number} [practicalFreq] – praktische Atemfrequenz (Hz), bereits
-     *   auf 2. Harmonische umgerechnet wenn nötig (von hrv.practicalBreathFreq).
-     *   Fehlt der Parameter, wird lfPeakFreq direkt verwendet.
+     * @param {object} result         – FFT-Analyseergebnis aus hrv.frequencyAnalysis()
+     * @param {number} [practicalFreq] – praktische Atemfrequenz (Hz), 2. Harmonische
+     *   wenn Mayer-Welle < 4.5/min (von hrv.practicalBreathFreq)
      */
     setFFTResult(result, practicalFreq) {
         if (!result) return;
         const f = practicalFreq ?? result.lfPeakFreq ?? result.resonanceFreq;
-        if (f >= 0.04 && f <= 0.4) {   // breiter erlaubt: 2. Harmonische kann bis 0.3 Hz
+        if (f >= 0.04 && f <= 0.4) {
             this.resonanceFreq = 0.9 * this.resonanceFreq + 0.1 * f;
         }
     }
@@ -502,6 +505,96 @@ export class CoherenceWaveOverlay {
         return `hsla(${Math.round(this._hue())},80%,60%,${a})`;
     }
 
+    // ─── RSA-Berechnung (gecacht, nur neu bei neuem Herzschlag) ─────────────
+
+    _nextPow2(n) {
+        let p = 1; while (p < n) p <<= 1; return p;
+    }
+
+    /**
+     * Extrahiert die RSA-Kurve (kardiale Antwort auf Atmung) durch FFT-Bandpass.
+     * Bandpass: resonanceFreq ± 0.04 Hz  → zeigt echte Atemkomponente der HRV.
+     * Wird nur neu berechnet wenn ein neuer Herzschlag eingegangen ist.
+     * @returns {{ points: {ts,hr}[], amplitude: number, mean: number } | null}
+     */
+    _computeRSA() {
+        if (this.hrData.length < 8 || this._refOrigin === null) return null;
+
+        const lastTs = this.hrData[this.hrData.length - 1].ts;
+        if (this._rsaCache && this._rsaLastTs === lastTs) return this._rsaCache;
+        this._rsaLastTs = lastTs;
+
+        const RATE   = 4;              // Hz Resampling
+        const dt     = 1000 / RATE;   // ms pro Sample
+        const now    = Date.now();
+        const startT = now - this.windowSec * 1000;
+        const rawN   = Math.floor(this.windowSec * RATE);   // 120 für 30s @ 4Hz
+
+        // Lineare Interpolation auf gleichmäßiges Raster
+        const samples = new Float64Array(rawN);
+        let j = 0;
+        for (let i = 0; i < rawN; i++) {
+            const t = startT + i * dt;
+            while (j < this.hrData.length - 1 && this.hrData[j + 1].ts <= t) j++;
+            if (j === 0 && t < this.hrData[0].ts) {
+                samples[i] = this.hrData[0].hr;
+            } else if (j >= this.hrData.length - 1) {
+                samples[i] = this.hrData[this.hrData.length - 1].hr;
+            } else {
+                const t0 = this.hrData[j].ts, t1 = this.hrData[j + 1].ts;
+                const a  = t1 > t0 ? (t - t0) / (t1 - t0) : 0;
+                samples[i] = this.hrData[j].hr + a * (this.hrData[j + 1].hr - this.hrData[j].hr);
+            }
+        }
+
+        // DC entfernen
+        const mean = samples.reduce((a, b) => a + b) / rawN;
+        for (let i = 0; i < rawN; i++) samples[i] -= mean;
+
+        // Auf 2er-Potenz padden
+        const n      = this._nextPow2(rawN);
+        const padded = new Float64Array(n);
+        for (let i = 0; i < rawN; i++) padded[i] = samples[i];
+
+        // Forward-FFT
+        const { real, imag } = FFT.forward(padded);
+
+        // Bandpass: resonanceFreq ± 0.04 Hz (beidseitig für reale Signale)
+        const bw    = 0.04;
+        const fLow  = Math.max(0.01, this.resonanceFreq - bw);
+        const fHigh = this.resonanceFreq + bw;
+        const df    = RATE / n;
+
+        const fReal = new Float64Array(n);
+        const fImag = new Float64Array(n);
+        for (let k = 0; k < n; k++) {
+            const f    = k <= n / 2 ? k * df : (k - n) * df;
+            const absF = Math.abs(f);
+            if (absF >= fLow && absF <= fHigh) {
+                fReal[k] = real[k];
+                fImag[k] = imag[k];
+            }
+        }
+
+        // IFFT → gefilterte Zeitreihe (nur Realteil relevant)
+        const { real: out } = FFT.inverse(fReal, fImag);
+
+        // Amplitude (RMS × √2 ≈ Spitzenamplitude für Sinussignal)
+        let sumSq = 0;
+        for (let i = 0; i < rawN; i++) sumSq += out[i] * out[i];
+        const amplitude = Math.sqrt(sumSq / rawN) * Math.SQRT2;
+
+        const points = Array.from({ length: rawN }, (_, i) => ({
+            ts: startT + i * dt,
+            hr: out[i] + mean,
+        }));
+
+        this._rsaCache = { points, amplitude, mean };
+        return this._rsaCache;
+    }
+
+    // ─── Zeichnen ────────────────────────────────────────────────────────────
+
     _draw() {
         const { canvas, ctx } = this;
         const W = canvas.width, H = canvas.height;
@@ -520,33 +613,29 @@ export class CoherenceWaveOverlay {
 
         const hrs  = this.hrData.map(d => d.hr);
         const mean = hrs.reduce((a, b) => a + b) / hrs.length;
-        const curAmp = (Math.max(...hrs) - Math.min(...hrs)) / 2;
-        this._smoothAmp = this._smoothAmp * 0.9 + curAmp * 0.1;
+
+        // RSA-gefilterte Kurve (gecacht, nur neu bei Herzschlag)
+        const rsa = this._computeRSA();
+
+        // Amplitude für Y-Skalierung aktualisieren
+        if (rsa && rsa.amplitude > 0) {
+            this._smoothAmp = this._smoothAmp * 0.85 + rsa.amplitude * 0.15;
+        } else {
+            const curAmp = (Math.max(...hrs) - Math.min(...hrs)) / 2;
+            this._smoothAmp = this._smoothAmp * 0.9 + curAmp * 0.1;
+        }
         const refAmp = Math.max(this._smoothAmp, 3);
         const scale  = (zH * 0.38) / refAmp;
         const toY    = hr => zMid - (hr - mean) * scale;
 
-        // Subtiler Hintergrund für Wellen-Zone
+        // Hintergrund-Gradient für Wellen-Zone
         const bgGrad = ctx.createLinearGradient(0, zTop, 0, H);
         bgGrad.addColorStop(0, 'rgba(0,5,15,0)');
         bgGrad.addColorStop(1, 'rgba(0,5,15,0.6)');
         ctx.fillStyle = bgGrad;
         ctx.fillRect(0, zTop, W, zH);
 
-        // ─── Referenz-Sinus ───────────────────────────────────────────────────
-        ctx.beginPath();
-        for (let x = 0; x <= W; x++) {
-            const tSec = (startT + (x / W) * this.windowSec * 1000 - this._refOrigin) / 1000;
-            const y    = toY(mean + refAmp * Math.sin(2 * Math.PI * this.resonanceFreq * tSec));
-            x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-        }
-        ctx.strokeStyle = 'rgba(255,255,255,0.28)';
-        ctx.lineWidth   = 1.5;
-        ctx.setLineDash([6, 5]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // ─── Gemessene HR-Kurve ───────────────────────────────────────────────
+        // ─── Rohe HR-Kurve (dezent, kontext-gebend) ───────────────────────────
         ctx.beginPath();
         let started = false;
         for (const d of this.hrData) {
@@ -554,15 +643,15 @@ export class CoherenceWaveOverlay {
             if (x < 0) continue;
             started ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), started = true);
         }
-        ctx.strokeStyle = this._color(0.9);
-        ctx.lineWidth   = 2.5;
+        ctx.strokeStyle = this._color(0.4);
+        ctx.lineWidth   = 1.5;
         ctx.stroke();
 
-        // Glow bei hoher Kohärenz
+        // Glow der HR-Kurve bei hoher Kohärenz
         if (this.coherenceScore > 70) {
             ctx.save();
             ctx.shadowColor = this._color(1);
-            ctx.shadowBlur  = 6 + (this.coherenceScore - 70) * 0.5;
+            ctx.shadowBlur  = 5 + (this.coherenceScore - 70) * 0.4;
             ctx.beginPath();
             started = false;
             for (const d of this.hrData) {
@@ -570,29 +659,55 @@ export class CoherenceWaveOverlay {
                 if (x < 0) continue;
                 started ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), started = true);
             }
-            ctx.strokeStyle = this._color(0.35);
-            ctx.lineWidth   = 5;
+            ctx.strokeStyle = this._color(0.25);
+            ctx.lineWidth   = 4;
             ctx.stroke();
             ctx.restore();
         }
 
-        // Frequenz-Label (links oben)
-        ctx.fillStyle = 'rgba(255,255,255,0.30)';
-        ctx.font      = '10px system-ui';
-        ctx.textAlign = 'left';
-        ctx.fillText(`${(this.resonanceFreq * 60).toFixed(1)} Atemz/min`, 8, zTop + 14);
+        // ─── RSA-Kurve (primäre Führung) oder Fallback-Sinus ─────────────────
+        let dotY, isRising;
 
-        // ─── Atemführungs-Punkt ───────────────────────────────────────────────
-        // Wandert live auf der Referenz-Sinuslinie (rechter Rand = "jetzt").
-        // Steigt der Sinus → Einatmen; fällt er → Ausatmen.
-        const nowSec   = (now - this._refOrigin) / 1000;
-        const phase    = 2 * Math.PI * this.resonanceFreq * nowSec;
-        const dotRefHR = mean + refAmp * Math.sin(phase);
-        const dotX     = W - 7;
-        const dotY     = toY(dotRefHR);
-        const isRising = Math.cos(phase) > 0;
+        if (rsa) {
+            // Authentisches HF-gefiltertes HRV-Signal
+            ctx.beginPath();
+            started = false;
+            for (const d of rsa.points) {
+                const x = toX(d.ts), y = toY(d.hr);
+                if (x < 0 || x > W + 2) continue;
+                started ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), started = true);
+            }
+            ctx.strokeStyle = 'rgba(255,255,255,0.70)';
+            ctx.lineWidth   = 2.5;
+            ctx.stroke();
 
-        // Äußerer Glow-Ring
+            // Dot-Position: letzter RSA-Punkt; Phase aus Steigung
+            const last = rsa.points[rsa.points.length - 1];
+            const prev = rsa.points[rsa.points.length - 2];
+            dotY     = toY(last.hr);
+            isRising = last.hr >= prev.hr;
+        } else {
+            // Fallback-Sinus während Warmup (< ~30s Daten)
+            ctx.beginPath();
+            for (let x = 0; x <= W; x++) {
+                const tSec = (startT + (x / W) * this.windowSec * 1000 - this._refOrigin) / 1000;
+                const y    = toY(mean + refAmp * Math.sin(2 * Math.PI * this.resonanceFreq * tSec));
+                x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+            }
+            ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+            ctx.lineWidth   = 1.5;
+            ctx.setLineDash([6, 5]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            const phase = 2 * Math.PI * this.resonanceFreq * ((now - this._refOrigin) / 1000);
+            dotY     = toY(mean + refAmp * Math.sin(phase));
+            isRising = Math.cos(phase) > 0;
+        }
+
+        // ─── Atemführungs-Punkt (rechter Rand = jetzt) ───────────────────────
+        const dotX = W - 7;
+
         ctx.save();
         ctx.shadowColor = 'rgba(255,255,255,0.7)';
         ctx.shadowBlur  = 14;
@@ -602,7 +717,6 @@ export class CoherenceWaveOverlay {
         ctx.fill();
         ctx.restore();
 
-        // Kern-Punkt
         ctx.save();
         ctx.shadowColor = 'rgba(255,255,255,0.95)';
         ctx.shadowBlur  = 6;
@@ -612,15 +726,19 @@ export class CoherenceWaveOverlay {
         ctx.fill();
         ctx.restore();
 
-        // Atemphase-Label: bei hoher Kohärenz dezenter (User kennt den Rhythmus)
         const labelAlpha = this.coherenceScore > 75 ? 0.35 : 0.88;
         const label      = isRising ? '↑  Einatmen' : '↓  Ausatmen';
         const labelY     = isRising ? dotY - 13 : dotY + 20;
-        ctx.fillStyle  = `rgba(255,255,255,${labelAlpha})`;
-        ctx.font       = 'bold 12px system-ui';
-        ctx.textAlign  = 'right';
+        ctx.fillStyle = `rgba(255,255,255,${labelAlpha})`;
+        ctx.font      = 'bold 12px system-ui';
+        ctx.textAlign = 'right';
         ctx.fillText(label, dotX - 10, labelY);
-        ctx.textAlign  = 'left';
+        ctx.textAlign = 'left';
+
+        // Frequenz-Label
+        ctx.fillStyle = 'rgba(255,255,255,0.30)';
+        ctx.font      = '10px system-ui';
+        ctx.fillText(`${(this.resonanceFreq * 60).toFixed(1)} Atemz/min`, 8, zTop + 14);
     }
 
     destroy() {
