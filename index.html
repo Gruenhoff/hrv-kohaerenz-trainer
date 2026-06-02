@@ -440,6 +440,8 @@
                             <span class="milestone-line"></span>
                             <span class="milestone-label">15 bpm</span>
                         </div>
+                        <!-- Kohärenz-Welle (Overlay über Ballon) -->
+                        <canvas id="coherence-wave-canvas" class="coherence-wave-canvas"></canvas>
                         <!-- Ballon (Höhe & Farbe = visuelles Feedback) -->
                         <div class="balloon-wrapper" id="balloon-wrapper">
                             <svg class="balloon-svg" viewBox="0 0 100 140" xmlns="http://www.w3.org/2000/svg">
@@ -452,6 +454,9 @@
                             </svg>
                         </div>
                     </div>
+
+                    <!-- Coach-Text: Echtzeit-Coaching-Hinweise -->
+                    <div id="coach-text" class="coach-text"></div>
 
                     <!-- Tachogramm: rollender 120s Herzfrequenzverlauf -->
                     <div class="hrv-wave-card">

@@ -5,7 +5,8 @@
 import { PolarBluetooth } from './bluetooth.js';
 import { HRVAnalyzer }    from './hrv.js';
 import { Database }       from './database.js';
-import { RRVisualizer, SpectrumVisualizer, TachogramVisualizer } from './visualizer.js';
+import { RRVisualizer, SpectrumVisualizer, TachogramVisualizer, CoherenceWaveOverlay } from './visualizer.js';
+import { CoachingEngine } from './coaching.js';
 import { BreathPacer }    from './breathpacer.js';
 import { HRSonification } from './audio.js';
 import { Dashboard }      from './dashboard.js';
@@ -68,7 +69,10 @@ class App {
         this.spectrum        = null;
         this.pacer           = null;
         this.tacho           = null;   // Tachogramm für Phase 3
-        this.balloonInterval = null;   // RSA-Update-Takt für Phase 3
+        this.coherenceWave      = null;   // Kohärenz-Welle Overlay (Phase 3)
+        this.coachEngine        = null;   // Coaching-Engine (Phase 3)
+        this._bodyScanFFT       = null;   // FFT-Ergebnis aus Body-Scan (Vorkalibrierung)
+        this.balloonInterval    = null;   // RSA-Update-Takt für Phase 3
         this.pulseRAF        = null;   // Resonanz-Anker-Animation
         this.pulseEnabled    = true;
         this.bodyScanTimer   = null;   // Body-Scan-Countdown
@@ -292,8 +296,9 @@ class App {
             const accepted = this.hrv.addRR(rrMs);
             if (accepted && this.session.active) {
                 // Visualizer updaten
-                if (this.visualizer) this.visualizer.addRR(rrMs);
-                if (this.tacho)      this.tacho.addRR(rrMs);
+                if (this.visualizer)    this.visualizer.addRR(rrMs);
+                if (this.tacho)         this.tacho.addRR(rrMs);
+                if (this.coherenceWave) this.coherenceWave.addRR(rrMs);
 
                 // RMSSD live updaten
                 const rmssd = this.hrv.rmssd();
@@ -843,6 +848,7 @@ class App {
 
             // HRV-Puffer für Baseline starten (frischer Buffer)
             this.hrv.reset();
+            this._bodyScanFFT = null;
 
             setup.style.display   = 'none';
             screen.style.display  = '';
@@ -867,6 +873,14 @@ class App {
                     this.bodyScanBaseline = Math.round(this.hrv.rmssd());
                 } else {
                     this.bodyScanBaseline = null;
+                }
+                // FFT mit Body-Scan-Daten → Vorkalibrierung der Kohärenz-Welle
+                if (this.hrv.dataSpanSeconds >= 30) {
+                    const fft = this.hrv.frequencyAnalysis();
+                    if (fft) {
+                        this.hrv.updateResonanceFrequency();
+                        this._bodyScanFFT = fft;
+                    }
                 }
                 screen.style.display = 'none';
                 resolve();
@@ -983,6 +997,26 @@ class App {
             if (tachoCanvas) this.tacho = new TachogramVisualizer(tachoCanvas);
         }
 
+        // Kohärenz-Welle Overlay + Coaching-Engine (Phase 3)
+        if (this.coherenceWave) { this.coherenceWave.destroy(); this.coherenceWave = null; }
+        if (this.coachEngine)   { this.coachEngine.reset();     this.coachEngine   = null; }
+        if (phase === 3) {
+            const waveCanvas = document.getElementById('coherence-wave-canvas');
+            if (waveCanvas) {
+                this.coherenceWave = new CoherenceWaveOverlay(waveCanvas);
+                this._preseedCoherenceWave();   // Body-Scan-Daten sofort einladen
+                this.coherenceWave.start();
+            }
+            this.coachEngine = new CoachingEngine();
+            // Coaching-Zustand aus Body-Scan-Daten vorinitialisieren
+            if (this._bodyScanFFT) {
+                this.coachEngine.update(
+                    this._bodyScanFFT.coherenceScore,
+                    this.hrv.dataSpanSeconds
+                );
+            }
+        }
+
         // Ballon-RSA-Update alle 2s (Phase 3)
         clearInterval(this.balloonInterval);
         if (phase === 3) {
@@ -1025,7 +1059,11 @@ class App {
         clearInterval(this.balloonInterval);
         if (this.pacer)     this.pacer.stop();
         if (this.visualizer) this.visualizer.stop();
-        if (this.tacho)     { this.tacho.destroy(); this.tacho = null; }
+        if (this.tacho)         { this.tacho.destroy(); this.tacho = null; }
+        if (this.coherenceWave) { this.coherenceWave.destroy(); this.coherenceWave = null; }
+        if (this.coachEngine)   { this.coachEngine = null; }
+        const coachEl = document.getElementById('coach-text');
+        if (coachEl) { coachEl.className = 'coach-text'; coachEl.textContent = ''; }
         if (this.zone2)     this.zone2.stopFeldTestSession();
         if (this.audio)     this.audio.stop();
         this._stopResonancePulse();
@@ -1338,6 +1376,16 @@ class App {
         if (this.visualizer) this.visualizer.setCoherence(score);
         if (this.spectrum)   this.spectrum.update(result.frequencies, result.power, result.resonanceFreq);
 
+        // Kohärenz-Welle + Coaching (Phase 3)
+        if (this.coherenceWave) {
+            this.coherenceWave.setFFTResult(result);
+            this.coherenceWave.setCoherence(score);
+        }
+        if (this.coachEngine) {
+            const instr = this.coachEngine.update(score, this.hrv.dataSpanSeconds);
+            this._updateCoachText(instr);
+        }
+
         // Streak-Tracking (Kohärenz ≥ 70%)
         this._updateCoherenceStreak(score, tSec);
 
@@ -1433,6 +1481,57 @@ class App {
             streakEl.textContent = s > 0 ? `${s}s` : '—';
             streakEl.style.color = s > 0 ? 'var(--accent-teal)' : '';
         }
+    }
+
+    /**
+     * Kohärenz-Welle mit den RR-Daten aus dem Body-Scan vorbelegen.
+     * Rekonstruiert absolute Zeitstempel aus dem kumulativen HRV-Puffer.
+     * Setzt Resonanzfrequenz, Phase-Anker und Amplitude aus dem Body-Scan-FFT.
+     */
+    _preseedCoherenceWave() {
+        if (!this.coherenceWave) return;
+        const rr = this.hrv.rrBuffer;
+        const ts = this.hrv.rrTimestamps;
+        if (rr.length < 4 || ts.length < 4) return;
+
+        // Letzter Schlag = jetzt; zurückrechnen auf absolute Timestamps
+        const now       = Date.now();
+        const lastCumTs = ts[ts.length - 1];
+        const windowMs  = this.coherenceWave.windowSec * 1000;
+
+        for (let i = 0; i < rr.length; i++) {
+            const absTs = now - (lastCumTs - ts[i]);
+            if (now - absTs > windowMs) continue;   // außerhalb Fenster
+            this.coherenceWave.hrData.push({ ts: absTs, hr: 60000 / rr[i] });
+        }
+
+        if (this.coherenceWave.hrData.length === 0) return;
+
+        // Phase-Anker auf erstes Datenpunkt setzen
+        this.coherenceWave._refOrigin = this.coherenceWave.hrData[0].ts;
+
+        // Initiale Amplitude aus den vorgeladenen Daten
+        const hrs = this.coherenceWave.hrData.map(d => d.hr);
+        const amp = (Math.max(...hrs) - Math.min(...hrs)) / 2;
+        if (amp > 0) this.coherenceWave._smoothAmp = amp;
+
+        // Resonanzfrequenz aus Body-Scan-FFT
+        const fft = this._bodyScanFFT;
+        if (fft) {
+            const f = fft.lfPeakFreq ?? fft.resonanceFreq;
+            if (f >= 0.04 && f <= 0.15) this.coherenceWave.resonanceFreq = f;
+            this.coherenceWave.setCoherence(fft.coherenceScore ?? 0);
+        } else {
+            this.coherenceWave.resonanceFreq = this.hrv.resonanceFreq;
+        }
+    }
+
+    /** Coach-Text-Element mit aktuellem Coaching-Zustand aktualisieren */
+    _updateCoachText(instr) {
+        const el = document.getElementById('coach-text');
+        if (!el || !instr) return;
+        el.className  = `coach-text state-${instr.state}`;
+        el.textContent = instr.message ?? '';
     }
 
     /**

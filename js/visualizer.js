@@ -300,6 +300,7 @@ export class SpectrumVisualizer {
 }
 
 // ─── Tachogramm-Visualisierung (Phase 3 Selbsterzeugung) ─────────────────────
+
 // Zeigt rollenden 120s Herzfrequenzverlauf (HR in bpm, nicht RR-Intervalle)
 
 export class TachogramVisualizer {
@@ -410,5 +411,214 @@ export class TachogramVisualizer {
 
     destroy() {
         this._resizeObserver.disconnect();
+    }
+}
+
+// ─── Kohärenz-Welle Overlay (Phase 3) ────────────────────────────────────────
+// Halbtransparentes Canvas über dem Ballon-Container.
+// Untere 35% = Wellen-Zone:
+//   – gestrichelte Referenz-Sinuslinie (adaptiv an Resonanzfrequenz)
+//   – farbige gemessene HR-Kurve (Rot → Gelb → Grün → Türkis je nach Kohärenz)
+//   – Glow-Effekt bei Kohärenz > 70%
+
+export class CoherenceWaveOverlay {
+    constructor(canvas) {
+        this.canvas         = canvas;
+        this.ctx            = canvas.getContext('2d');
+        this.hrData         = [];    // [{ ts: ms, hr: bpm }]
+        this.windowSec      = 30;
+        this.resonanceFreq  = 0.1;   // Hz, adaptiv
+        this.coherenceScore = 0;
+        this._refOrigin     = null;  // ms – Phasenanker
+        this._smoothAmp     = 8;     // bpm – geglättete RSA-Amplitude
+        this._running       = false;
+        this._raf           = null;
+
+        this._ro = new ResizeObserver(() => this._resize());
+        this._ro.observe(canvas.parentElement || canvas);
+        this._resize();
+    }
+
+    _resize() {
+        const p = this.canvas.parentElement;
+        if (p) {
+            this.canvas.width  = p.clientWidth;
+            this.canvas.height = p.clientHeight;
+        }
+    }
+
+    /** Neues RR-Intervall (ms) hinzufügen – bei jedem Herzschlag aufrufen */
+    addRR(rrMs) {
+        if (rrMs < 300 || rrMs > 1800) return;
+        const now = Date.now();
+        if (this._refOrigin === null) this._refOrigin = now;
+        this.hrData.push({ ts: now, hr: 60000 / rrMs });
+        const cutoff = now - this.windowSec * 1000;
+        while (this.hrData.length > 1 && this.hrData[0].ts < cutoff) this.hrData.shift();
+    }
+
+    /** FFT-Ergebnis übergeben → adaptive Resonanzfrequenz-Aktualisierung */
+    setFFTResult(result) {
+        if (!result) return;
+        const f = result.lfPeakFreq ?? result.resonanceFreq;
+        if (f >= 0.04 && f <= 0.15) {
+            this.resonanceFreq = 0.9 * this.resonanceFreq + 0.1 * f;
+        }
+    }
+
+    setCoherence(score) {
+        this.coherenceScore = Math.max(0, Math.min(100, score));
+    }
+
+    start() { this._running = true; this._loop(); }
+
+    stop() {
+        this._running = false;
+        if (this._raf) cancelAnimationFrame(this._raf);
+        this._raf = null;
+    }
+
+    _loop() {
+        if (!this._running) return;
+        this._draw();
+        this._raf = requestAnimationFrame(() => this._loop());
+    }
+
+    _hue() {
+        const s = this.coherenceScore;
+        if (s < 35) return 0;
+        if (s < 65) return 30 + (s - 35);
+        if (s < 75) return 60 + (s - 65) * 6;
+        return 160 + (s - 75) * 0.8;
+    }
+
+    _color(a = 1) {
+        return `hsla(${Math.round(this._hue())},80%,60%,${a})`;
+    }
+
+    _draw() {
+        const { canvas, ctx } = this;
+        const W = canvas.width, H = canvas.height;
+        ctx.clearRect(0, 0, W, H);
+
+        if (this.hrData.length < 4 || this._refOrigin === null) return;
+
+        // Wellen-Zone: untere 35% des Canvas
+        const zTop = H * 0.65;
+        const zH   = H - zTop;
+        const zMid = zTop + zH * 0.5;
+
+        const now    = Date.now();
+        const startT = now - this.windowSec * 1000;
+        const toX    = ts => Math.max(0, ((ts - startT) / (this.windowSec * 1000)) * W);
+
+        const hrs  = this.hrData.map(d => d.hr);
+        const mean = hrs.reduce((a, b) => a + b) / hrs.length;
+        const curAmp = (Math.max(...hrs) - Math.min(...hrs)) / 2;
+        this._smoothAmp = this._smoothAmp * 0.9 + curAmp * 0.1;
+        const refAmp = Math.max(this._smoothAmp, 3);
+        const scale  = (zH * 0.38) / refAmp;
+        const toY    = hr => zMid - (hr - mean) * scale;
+
+        // Subtiler Hintergrund für Wellen-Zone
+        const bgGrad = ctx.createLinearGradient(0, zTop, 0, H);
+        bgGrad.addColorStop(0, 'rgba(0,5,15,0)');
+        bgGrad.addColorStop(1, 'rgba(0,5,15,0.6)');
+        ctx.fillStyle = bgGrad;
+        ctx.fillRect(0, zTop, W, zH);
+
+        // ─── Referenz-Sinus ───────────────────────────────────────────────────
+        ctx.beginPath();
+        for (let x = 0; x <= W; x++) {
+            const tSec = (startT + (x / W) * this.windowSec * 1000 - this._refOrigin) / 1000;
+            const y    = toY(mean + refAmp * Math.sin(2 * Math.PI * this.resonanceFreq * tSec));
+            x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+        ctx.lineWidth   = 1.5;
+        ctx.setLineDash([6, 5]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // ─── Gemessene HR-Kurve ───────────────────────────────────────────────
+        ctx.beginPath();
+        let started = false;
+        for (const d of this.hrData) {
+            const x = toX(d.ts), y = toY(d.hr);
+            if (x < 0) continue;
+            started ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), started = true);
+        }
+        ctx.strokeStyle = this._color(0.9);
+        ctx.lineWidth   = 2.5;
+        ctx.stroke();
+
+        // Glow bei hoher Kohärenz
+        if (this.coherenceScore > 70) {
+            ctx.save();
+            ctx.shadowColor = this._color(1);
+            ctx.shadowBlur  = 6 + (this.coherenceScore - 70) * 0.5;
+            ctx.beginPath();
+            started = false;
+            for (const d of this.hrData) {
+                const x = toX(d.ts), y = toY(d.hr);
+                if (x < 0) continue;
+                started ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), started = true);
+            }
+            ctx.strokeStyle = this._color(0.35);
+            ctx.lineWidth   = 5;
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        // Frequenz-Label (links oben)
+        ctx.fillStyle = 'rgba(255,255,255,0.30)';
+        ctx.font      = '10px system-ui';
+        ctx.textAlign = 'left';
+        ctx.fillText(`${(this.resonanceFreq * 60).toFixed(1)} Atemz/min`, 8, zTop + 14);
+
+        // ─── Atemführungs-Punkt ───────────────────────────────────────────────
+        // Wandert live auf der Referenz-Sinuslinie (rechter Rand = "jetzt").
+        // Steigt der Sinus → Einatmen; fällt er → Ausatmen.
+        const nowSec   = (now - this._refOrigin) / 1000;
+        const phase    = 2 * Math.PI * this.resonanceFreq * nowSec;
+        const dotRefHR = mean + refAmp * Math.sin(phase);
+        const dotX     = W - 7;
+        const dotY     = toY(dotRefHR);
+        const isRising = Math.cos(phase) > 0;
+
+        // Äußerer Glow-Ring
+        ctx.save();
+        ctx.shadowColor = 'rgba(255,255,255,0.7)';
+        ctx.shadowBlur  = 14;
+        ctx.beginPath();
+        ctx.arc(dotX, dotY, 8, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.15)';
+        ctx.fill();
+        ctx.restore();
+
+        // Kern-Punkt
+        ctx.save();
+        ctx.shadowColor = 'rgba(255,255,255,0.95)';
+        ctx.shadowBlur  = 6;
+        ctx.beginPath();
+        ctx.arc(dotX, dotY, 5, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        ctx.fill();
+        ctx.restore();
+
+        // Atemphase-Label: bei hoher Kohärenz dezenter (User kennt den Rhythmus)
+        const labelAlpha = this.coherenceScore > 75 ? 0.35 : 0.88;
+        const label      = isRising ? '↑  Einatmen' : '↓  Ausatmen';
+        const labelY     = isRising ? dotY - 13 : dotY + 20;
+        ctx.fillStyle  = `rgba(255,255,255,${labelAlpha})`;
+        ctx.font       = 'bold 12px system-ui';
+        ctx.textAlign  = 'right';
+        ctx.fillText(label, dotX - 10, labelY);
+        ctx.textAlign  = 'left';
+    }
+
+    destroy() {
+        this.stop();
+        this._ro.disconnect();
     }
 }
