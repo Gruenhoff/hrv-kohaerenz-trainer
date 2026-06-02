@@ -2386,6 +2386,72 @@ input:checked + .toggle-slider::before { transform: translateX(16px); background
     border-color: var(--accent-cyan);
 }
 
+/* ─── Phase 1 Auto-Kalibrierung ─────────────────────────────────────── */
+.p1cal-steps {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    margin-bottom: 1.5rem;
+}
+.p1cal-step-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.3rem;
+}
+.p1cal-step-line {
+    flex: 1;
+    height: 2px;
+    background: var(--border);
+    min-width: 2.5rem;
+    margin: 0 0.25rem;
+    margin-bottom: 1.3rem;
+    transition: background 0.4s;
+}
+.p1cal-step-dot {
+    width: 2rem;
+    height: 2rem;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+    font-weight: 600;
+    transition: background 0.4s, border-color 0.4s, color 0.4s;
+}
+.p1cal-step-dot.p1cal-active {
+    border-color: var(--accent-cyan);
+    color: var(--accent-cyan);
+    background: rgba(0, 212, 255, 0.1);
+}
+.p1cal-step-dot.p1cal-done {
+    border-color: var(--accent-teal);
+    background: var(--accent-teal);
+    color: #000;
+}
+.p1cal-step-label {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+.p1cal-freq {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--accent-teal);
+    letter-spacing: 0.03em;
+    margin: 0.5rem 0 0.75rem;
+}
+.p1cal-live-hr {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-top: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
 /* ─── Phase 3: Heißluftballon-Feedback ──────────────────────────────────── */
 
 /* Resonanz-Anker Toggle */

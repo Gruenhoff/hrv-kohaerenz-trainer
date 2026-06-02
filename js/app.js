@@ -836,6 +836,147 @@ class App {
      * Aufmerksamkeitssequenz, dabei Baseline-RMSSD messen.
      * Resolvet wenn fertig oder übersprungen.
      */
+    async _runPhase1Calibration() {
+        const screen = document.getElementById('p1cal-screen');
+        if (!screen) return;
+
+        // ── Setup ────────────────────────────────────────────────────────────
+        this.hrv.reset();
+        this._bodyScanFFT = null;
+        document.getElementById('session-setup').style.display = 'none';
+        screen.style.display = '';
+
+        const ring      = document.getElementById('p1cal-ring');
+        const countEl   = document.getElementById('p1cal-countdown');
+        const titleEl   = document.getElementById('p1cal-title');
+        const subtitleEl = document.getElementById('p1cal-subtitle');
+        const freqEl    = document.getElementById('p1cal-freq');
+        const pacerWrap = document.getElementById('p1cal-pacer-wrap');
+        const skipBtn   = document.getElementById('p1cal-skip-btn');
+        const circ      = 2 * Math.PI * 54;
+
+        let skipped = false;
+        if (skipBtn) skipBtn.onclick = () => { skipped = true; };
+
+        // Sweep-Frequenzen: gespeicherte Resonanz ± 0.2/min (auf 1 Dezimale)
+        const center = Math.round(this.hrv.practicalBreathFreq * 600) / 10;
+        const freqs  = [center - 0.2, center, center + 0.2]
+            .map(f => Math.round(Math.max(4.5, Math.min(8.0, f)) * 10) / 10);
+
+        // ── Helper: eine Phase als Countdown ablaufen lassen ─────────────────
+        const runPhase = (totalSec, onTick) => new Promise(resolve => {
+            let rem = totalSec;
+            if (ring)    { ring.style.strokeDasharray = circ; ring.style.strokeDashoffset = circ; }
+            if (countEl) countEl.textContent = rem;
+
+            const id = setInterval(() => {
+                if (skipped) { clearInterval(id); resolve(false); return; }
+                rem--;
+                if (countEl) countEl.textContent = rem;
+                if (ring)    ring.style.strokeDashoffset = circ * (1 - (totalSec - rem) / totalSec);
+                onTick?.(rem);
+                if (rem <= 0) { clearInterval(id); resolve(true); }
+            }, 1000);
+        });
+
+        // ── Schritt 1: Baseline 60s ───────────────────────────────────────────
+        this._p1calSetStep(0);
+        if (titleEl)    titleEl.textContent    = 'Baseline · 60s';
+        if (subtitleEl) subtitleEl.textContent = 'Setze dich aufrecht hin und atme natürlich';
+        if (pacerWrap)  pacerWrap.style.display = 'none';
+        if (freqEl)     freqEl.style.display    = 'none';
+
+        await runPhase(60, rem => {
+            if (rem <= 30 && subtitleEl && this.hrv.dataSpanSeconds >= 10) {
+                const rmssd = Math.round(this.hrv.rmssd());
+                if (rmssd > 0) subtitleEl.textContent = `Baseline-RMSSD: ${rmssd} ms`;
+            }
+        });
+        if (skipped) { screen.style.display = 'none'; return; }
+
+        // FFT auf Baseline-Daten → Resonanz verfeinern
+        if (this.hrv.dataSpanSeconds >= 30) {
+            const fft = this.hrv.frequencyAnalysis();
+            if (fft) { this.hrv.updateResonanceFrequency(); this._bodyScanFFT = fft; }
+        }
+
+        // ── Schritt 2: Sweep 3 × 30s ─────────────────────────────────────────
+        this._p1calSetStep(1);
+        if (pacerWrap) pacerWrap.style.display = '';
+
+        const sweepResults = [];
+        for (let i = 0; i < freqs.length; i++) {
+            if (skipped) break;
+            const freq    = freqs[i];
+            const cycleMs = Math.round(60000 / freq);
+            const inhale  = Math.round(cycleMs * 0.35 / 100) * 100;
+            const exhale  = cycleMs - inhale;
+
+            if (titleEl)    titleEl.textContent    = `Frequenz ${i + 1} / 3`;
+            if (subtitleEl) subtitleEl.textContent = 'Folge dem Atempunkt';
+            if (freqEl)     { freqEl.textContent = `${freq.toFixed(1)} Atemz/min`; freqEl.style.display = ''; }
+
+            // Pacer starten
+            if (this.pacer) { this.pacer.stop(); this.pacer = null; }
+            const cont  = document.getElementById('p1cal-pacer-container');
+            const label = document.getElementById('p1cal-breath-label');
+            if (cont) {
+                this.pacer = new BreathPacer(cont, { inhale, holdIn: 0, exhale, holdOut: 0 }, label, null, this.audio);
+                this.pacer.start();
+            }
+
+            const samples = [];
+            await runPhase(30, rem => {
+                if (rem <= 20) samples.push(this.hrv.rmssd());  // letzte 20s messen
+            });
+            if (this.pacer) { this.pacer.stop(); this.pacer = null; }
+
+            const valid = samples.filter(v => v > 0);
+            sweepResults.push({ freq, avg: valid.length ? valid.reduce((a, b) => a + b) / valid.length : 0 });
+        }
+        if (skipped) { screen.style.display = 'none'; return; }
+
+        // ── Schritt 3: Bestes Ergebnis → Session-Rhythmus setzen ─────────────
+        this._p1calSetStep(2);
+        if (pacerWrap) pacerWrap.style.display = 'none';
+        if (freqEl)    freqEl.style.display    = 'none';
+
+        const winner   = sweepResults.reduce((best, r) => r.avg > best.avg ? r : best);
+        const wCycleMs = Math.round(60000 / winner.freq);
+        const wInhale  = Math.round(wCycleMs * 0.35 / 100) * 100;
+        const wExhale  = wCycleMs - wInhale;
+        this.session.breathRhythm = { inhale: wInhale, holdIn: 0, exhale: wExhale, holdOut: 0 };
+
+        // Resonanzfrequenz und Rhythmus persistieren
+        this.hrv.resonanceFreq = winner.freq / 60;
+        await Promise.all([
+            this.db.setSetting('resonanceFreq', this.hrv.resonanceFreq),
+            this.db.setSetting('breathRhythm',  this.session.breathRhythm),
+        ]);
+
+        if (titleEl)    titleEl.textContent    = `Optimal: ${winner.freq.toFixed(1)} Atemz/min`;
+        if (subtitleEl) subtitleEl.textContent =
+            `${(wInhale / 1000).toFixed(1)}s ein  ·  ${(wExhale / 1000).toFixed(1)}s aus`;
+        if (countEl) countEl.textContent = '✓';
+        if (ring)    ring.style.strokeDashoffset = '0';
+
+        await new Promise(r => setTimeout(r, 2500));
+        screen.style.display = 'none';
+    }
+
+    /** Schritt-Dots der Phase-1-Kalibrierung aktualisieren (0=Baseline, 1=Sweep, 2=Optimal) */
+    _p1calSetStep(step) {
+        for (let i = 0; i <= 2; i++) {
+            const dot = document.getElementById(`p1cal-dot-${i}`);
+            if (!dot) continue;
+            dot.classList.toggle('p1cal-active', i === step);
+            dot.classList.toggle('p1cal-done',   i < step);
+        }
+    }
+
+    /**
+     * @param {Promise} resolve
+     */
     _runBodyScan() {
         return new Promise((resolve) => {
             const screen      = document.getElementById('body-scan-screen');
@@ -927,13 +1068,14 @@ class App {
 
         this._setSessionPhase(phase);
 
-        // Optional: 60s Body-Scan vor der Session (Haltung, Aufmerksamkeit, Baseline)
-        if (this.bodyScanEnabled) {
-            await this._runBodyScan();
+        if (phase === 1) {
+            // Phase 1: Auto-Kalibrierung (Baseline + 3-Punkt-Sweep → optimale Frequenz)
+            await this._runPhase1Calibration();
+        } else {
+            // Andere Phasen: optionaler Body-Scan
+            if (this.bodyScanEnabled) await this._runBodyScan();
+            else this.hrv.reset();
         }
-
-        // hrv.reset() nur wenn kein Body-Scan lief (sonst nutzen wir die Baseline-Daten)
-        if (!this.bodyScanEnabled) this.hrv.reset();
 
         this.session.active          = true;
         this.session.startTime       = Date.now();

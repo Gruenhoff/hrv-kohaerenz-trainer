@@ -365,6 +365,62 @@
             </div>
 
 
+            <!-- ═══ PHASE 1 AUTO-KALIBRIERUNG ══════════════════════ -->
+            <div id="p1cal-screen" style="display:none">
+                <div class="body-scan-card">
+
+                    <!-- Schritt-Indikatoren -->
+                    <div class="p1cal-steps">
+                        <div class="p1cal-step-item">
+                            <div class="p1cal-step-dot p1cal-active" id="p1cal-dot-0">1</div>
+                            <div class="p1cal-step-label">Baseline</div>
+                        </div>
+                        <div class="p1cal-step-line"></div>
+                        <div class="p1cal-step-item">
+                            <div class="p1cal-step-dot" id="p1cal-dot-1">2</div>
+                            <div class="p1cal-step-label">Sweep</div>
+                        </div>
+                        <div class="p1cal-step-line"></div>
+                        <div class="p1cal-step-item">
+                            <div class="p1cal-step-dot" id="p1cal-dot-2">3</div>
+                            <div class="p1cal-step-label">Optimal</div>
+                        </div>
+                    </div>
+
+                    <!-- Ring-Timer -->
+                    <div class="body-scan-ring-wrap">
+                        <svg class="body-scan-ring-svg" viewBox="0 0 120 120">
+                            <circle class="body-scan-ring-bg" cx="60" cy="60" r="54"/>
+                            <circle id="p1cal-ring" cx="60" cy="60" r="54"
+                                    fill="none" stroke="var(--accent-teal)"
+                                    stroke-width="4" stroke-linecap="round"
+                                    transform="rotate(-90 60 60)"/>
+                        </svg>
+                        <div class="body-scan-countdown" id="p1cal-countdown">60</div>
+                    </div>
+
+                    <!-- Titel / Untertitel -->
+                    <div class="body-scan-step" id="p1cal-title">Baseline · 60s</div>
+                    <div class="body-scan-baseline" id="p1cal-subtitle">Setze dich aufrecht hin und entspanne dich</div>
+
+                    <!-- Frequenz-Label (Sweep) -->
+                    <div class="p1cal-freq" id="p1cal-freq" style="display:none">—</div>
+
+                    <!-- Atempacer (Sweep) -->
+                    <div id="p1cal-pacer-wrap" style="display:none">
+                        <div id="p1cal-pacer-container" class="pacer-orb-host" style="height:160px"></div>
+                        <div id="p1cal-breath-label" class="breath-phase-label" style="text-align:center;margin-top:0.4rem"></div>
+                    </div>
+
+                    <!-- Live-HR dezent -->
+                    <div class="p1cal-live-hr">
+                        <span class="live-hr">—</span> bpm
+                    </div>
+
+                    <button class="body-scan-skip-btn" id="p1cal-skip-btn">Überspringen ▶</button>
+                </div>
+            </div>
+
             <!-- ═══ SESSION ACTIVE (während der Session) ══════════ -->
             <div id="session-active" style="display:none">
 
