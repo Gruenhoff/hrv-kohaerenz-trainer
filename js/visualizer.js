@@ -457,11 +457,17 @@ export class CoherenceWaveOverlay {
         while (this.hrData.length > 1 && this.hrData[0].ts < cutoff) this.hrData.shift();
     }
 
-    /** FFT-Ergebnis übergeben → adaptive Resonanzfrequenz-Aktualisierung */
-    setFFTResult(result) {
+    /**
+     * FFT-Ergebnis übergeben.
+     * @param {object} result  – FFT-Analyseergebnis aus hrv.frequencyAnalysis()
+     * @param {number} [practicalFreq] – praktische Atemfrequenz (Hz), bereits
+     *   auf 2. Harmonische umgerechnet wenn nötig (von hrv.practicalBreathFreq).
+     *   Fehlt der Parameter, wird lfPeakFreq direkt verwendet.
+     */
+    setFFTResult(result, practicalFreq) {
         if (!result) return;
-        const f = result.lfPeakFreq ?? result.resonanceFreq;
-        if (f >= 0.04 && f <= 0.15) {
+        const f = practicalFreq ?? result.lfPeakFreq ?? result.resonanceFreq;
+        if (f >= 0.04 && f <= 0.4) {   // breiter erlaubt: 2. Harmonische kann bis 0.3 Hz
             this.resonanceFreq = 0.9 * this.resonanceFreq + 0.1 * f;
         }
     }

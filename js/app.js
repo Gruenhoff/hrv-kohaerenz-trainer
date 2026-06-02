@@ -36,7 +36,9 @@ const BREATH_PATTERNS = {
 };
 
 function resonantRhythmFromFreq(freq) {
-    const cycleMs = 1000 / Math.max(0.05, Math.min(0.2, freq));
+    // Unter 4.5/min (0.075 Hz): 2. Harmonische verwenden – sonst unpraktikabel
+    const practical = freq < 0.075 ? freq * 2 : freq;
+    const cycleMs = 1000 / Math.max(0.05, Math.min(0.2, practical));
     return {
         inhale:  Math.round(cycleMs * 0.4),
         holdIn:  0,
@@ -1378,7 +1380,7 @@ class App {
 
         // Kohärenz-Welle + Coaching (Phase 3)
         if (this.coherenceWave) {
-            this.coherenceWave.setFFTResult(result);
+            this.coherenceWave.setFFTResult(result, this.hrv.practicalBreathFreq);
             this.coherenceWave.setCoherence(score);
         }
         if (this.coachEngine) {
@@ -1450,7 +1452,7 @@ class App {
         this.pulseRAF = requestAnimationFrame(tick);
         // Label aktualisieren
         const bpmLabel = document.getElementById('resonance-bpm-label');
-        if (bpmLabel) bpmLabel.textContent = (this.hrv.resonanceFreq * 60).toFixed(1);
+        if (bpmLabel) bpmLabel.textContent = (this.hrv.practicalBreathFreq * 60).toFixed(1);
     }
 
     _stopResonancePulse() {
@@ -1518,11 +1520,11 @@ class App {
         // Resonanzfrequenz aus Body-Scan-FFT
         const fft = this._bodyScanFFT;
         if (fft) {
-            const f = fft.lfPeakFreq ?? fft.resonanceFreq;
-            if (f >= 0.04 && f <= 0.15) this.coherenceWave.resonanceFreq = f;
+            // Praktische Frequenz: 2. Harmonische wenn Grundfrequenz < 4.5/min
+            this.coherenceWave.resonanceFreq = this.hrv.practicalBreathFreq;
             this.coherenceWave.setCoherence(fft.coherenceScore ?? 0);
         } else {
-            this.coherenceWave.resonanceFreq = this.hrv.resonanceFreq;
+            this.coherenceWave.resonanceFreq = this.hrv.practicalBreathFreq;
         }
     }
 

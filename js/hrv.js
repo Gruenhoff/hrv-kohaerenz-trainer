@@ -261,10 +261,20 @@ export class HRVAnalyzer {
     }
 
     /**
+     * Praktische Atemfrequenz: Resonanzfrequenz wenn ≥ 4.5/min,
+     * sonst 2. Harmonische (doppelt). Verhindert unpraktikable
+     * Empfehlungen bei Menschen mit sehr niedriger Mayer-Wellen-Frequenz.
+     */
+    get practicalBreathFreq() {
+        const f = this.resonanceFreq;
+        return f < 0.075 ? f * 2 : f;   // < 4.5/min → 2. Harmonische
+    }
+
+    /**
      * Atemfrequenz aus Resonanzfrequenz in Atemzüge/Minute
      */
     get breathRateFromResonance() {
-        return Math.round(this.resonanceFreq * 60 * 10) / 10;
+        return Math.round(this.practicalBreathFreq * 60 * 10) / 10;
     }
 
     /**
