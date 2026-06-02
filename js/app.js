@@ -925,14 +925,21 @@ class App {
                 this.pacer.start();
             }
 
-            const samples = [];
+            const rsaSamples = [];
             await runPhase(30, rem => {
-                if (rem <= 20) samples.push(this.hrv.rmssd());  // letzte 20s messen
+                if (rem <= 20) {
+                    rsaSamples.push(this.hrv.rsaAmplitude());          // Entscheidungsmetrik
+                    if (subtitleEl) {
+                        const rmssd = Math.round(this.hrv.rmssd());
+                        subtitleEl.textContent = `RMSSD: ${rmssd} ms`;
+                    }
+                }
             });
             if (this.pacer) { this.pacer.stop(); this.pacer = null; }
 
-            const valid = samples.filter(v => v > 0);
-            sweepResults.push({ freq, avg: valid.length ? valid.reduce((a, b) => a + b) / valid.length : 0 });
+            const validRsa = rsaSamples.filter(v => v > 0);
+            const avgRsa   = validRsa.length ? validRsa.reduce((a, b) => a + b) / validRsa.length : 0;
+            sweepResults.push({ freq, avgRsa });
         }
         if (skipped) { screen.style.display = 'none'; return; }
 
@@ -941,7 +948,7 @@ class App {
         if (pacerWrap) pacerWrap.style.display = 'none';
         if (freqEl)    freqEl.style.display    = 'none';
 
-        const winner   = sweepResults.reduce((best, r) => r.avg > best.avg ? r : best);
+        const winner   = sweepResults.reduce((best, r) => r.avgRsa > best.avgRsa ? r : best);
         const wCycleMs = Math.round(60000 / winner.freq);
         const wInhale  = Math.round(wCycleMs * 0.35 / 100) * 100;
         const wExhale  = wCycleMs - wInhale;
