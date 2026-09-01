@@ -22,6 +22,11 @@ export class PolarBluetooth {
         this.maxReconnectAttempts = 3;
         this.reconnectDelay = 2000;
 
+        // Nacht-Modus: unbegrenzte Reconnect-Versuche mit steigendem Abstand
+        // (unbeaufsichtigte Mehrstunden-Aufnahme, kein Mensch der eingreifen könnte)
+        this.persistentReconnect = false;
+        this._persistentDelays = [2000, 5000, 10000, 30000];
+
         // Event-Callbacks
         this.onRRInterval = null;    // (rrMs: number) => void
         this.onHeartRate  = null;    // (bpm: number) => void
@@ -151,7 +156,12 @@ export class PolarBluetooth {
 
         if (this.onDisconnect) this.onDisconnect();
 
-        // Automatisch neu verbinden
+        if (this.persistentReconnect) {
+            await this._persistentReconnectLoop();
+            return;
+        }
+
+        // Automatisch neu verbinden (begrenzt, für beaufsichtigte Tages-Sessions)
         if (this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnectAttempts++;
             this._setStatus(`Verbinde erneut (Versuch ${this.reconnectAttempts})...`);
@@ -168,9 +178,33 @@ export class PolarBluetooth {
     }
 
     /**
+     * Unbegrenzte Reconnect-Versuche mit steigendem Abstand (2s→5s→10s→30s, dann
+     * konstant 30s) — für unbeaufsichtigte Mehrstunden-Aufnahmen (Nacht-Modus).
+     */
+    async _persistentReconnectLoop() {
+        let i = 0;
+        while (this.persistentReconnect && !this.isConnected) {
+            this.reconnectAttempts++;
+            const delay = this._persistentDelays[Math.min(i, this._persistentDelays.length - 1)];
+            this._setStatus(`Verbinde erneut (Versuch ${this.reconnectAttempts})...`);
+            await new Promise(r => setTimeout(r, delay));
+
+            if (!this.persistentReconnect) return; // währenddessen abgebrochen
+
+            try {
+                await this._connectToServer();
+                return;
+            } catch {
+                i++;
+            }
+        }
+    }
+
+    /**
      * Verbindung trennen
      */
     disconnect() {
+        this.persistentReconnect = false;
         this.reconnectAttempts = this.maxReconnectAttempts; // Kein Auto-Reconnect
         if (this.device && this.device.gatt.connected) {
             this.device.gatt.disconnect();

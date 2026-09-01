@@ -204,11 +204,24 @@ export class HRVAnalyzer {
      * @returns {Float64Array} Resampeltes Signal
      */
     resample(rr = this.rrBuffer, timestamps = this.rrTimestamps) {
+        return HRVAnalyzer.resampleSeries(rr, timestamps, RESAMPLE_RATE);
+    }
+
+    /**
+     * RR-Intervalle auf gleichmäßige Zeitbasis resampeln (statische, zustandslose
+     * Variante — wiederverwendbar für beliebige RR/Zeitstempel-Ausschnitte, z.B.
+     * einzelne Fenster einer Nachtaufnahme, ohne eine HRVAnalyzer-Instanz zu brauchen).
+     * @param {number[]} rr
+     * @param {number[]} timestamps - Kumulierte Zeitstempel in ms
+     * @param {number} rate - Abtastrate in Hz
+     * @returns {Float64Array}
+     */
+    static resampleSeries(rr, timestamps, rate = RESAMPLE_RATE) {
         if (rr.length < 2) return new Float64Array(0);
 
         const startTime = timestamps[0];
         const endTime = timestamps[timestamps.length - 1];
-        const dt = 1000 / RESAMPLE_RATE; // ms pro Sample
+        const dt = 1000 / rate; // ms pro Sample
         const nSamples = Math.floor((endTime - startTime) / dt);
 
         if (nSamples < 4) return new Float64Array(0);
@@ -239,6 +252,30 @@ export class HRVAnalyzer {
         for (let i = 0; i < nSamples; i++) resampled[i] -= mean;
 
         return resampled;
+    }
+
+    /**
+     * Atemfrequenz aus einem RR-Fenster via Spektral-Peak im HF-Band (0,15–0,4 Hz).
+     * Für natürliche/ungeführte Atmung (z.B. Schlaf, ~12–20/min) — im Gegensatz zum
+     * LF-Band-Peak (lfPeakFreq), der auf langsame Resonanzatmung (~4,5–8/min) zielt.
+     * Zustandslos, unabhängig von der rollierenden Live-Instanz nutzbar.
+     * @param {number[]} rr
+     * @param {number[]} timestamps - Kumulierte Zeitstempel in ms
+     * @returns {number|null} Atemzüge/Minute, oder null bei unzureichenden Daten
+     */
+    static breathingRateFromWindow(rr, timestamps) {
+        if (rr.length < 2) return null;
+        const spanSeconds = (timestamps[timestamps.length - 1] - timestamps[0]) / 1000;
+        if (spanSeconds < 30) return null;
+
+        const signal = HRVAnalyzer.resampleSeries(rr, timestamps, RESAMPLE_RATE);
+        if (signal.length < 8) return null;
+
+        const { frequencies, power } = FFT.psd(Array.from(signal), RESAMPLE_RATE);
+        const { peakFreq, totalPower } = FFT.bandPower(frequencies, power, BANDS.HF.min, BANDS.HF.max);
+        if (totalPower <= 0) return null;
+
+        return peakFreq * 60;
     }
 
     /**

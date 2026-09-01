@@ -12,6 +12,7 @@ import { HRSonification } from './audio.js';
 import { Dashboard }      from './dashboard.js';
 import { Zone2 }          from './zone2.js';
 import { FrequencyTest, RhythmTest, DailyCheck, rhythmToString } from './resonanz.js';
+import { NightRecording } from './nightRecording.js';
 
 // ─── Phasenspezifische Dauer-Optionen ────────────────────────────────────────
 const PHASE_DURATIONS = {
@@ -80,6 +81,11 @@ class App {
         this.bodyScanTimer   = null;   // Body-Scan-Countdown
         this.bodyScanEnabled = true;
         this.bodyScanBaseline = null;  // RMSSD-Baseline aus Body-Scan
+
+        // Nacht-Atemfrequenz-Messung
+        this.night        = new NightRecording();
+        this._nightTicker = null;
+        this._wakeLock     = null;
 
         // Volles Training (Phase 1 → 2 → 3 automatisch)
         this.fullTraining = {
@@ -295,6 +301,9 @@ class App {
             // Zone-2-Puffer immer befüllen (auch außerhalb der Session)
             if (this.zone2) this.zone2.addRR(rrMs);
 
+            // Nacht-Aufnahme unabhängig vom Live-HRV-Puffer befüllen
+            if (this.night.active) this.night.addRR(rrMs);
+
             const accepted = this.hrv.addRR(rrMs);
             if (accepted && this.session.active) {
                 // Visualizer updaten
@@ -317,6 +326,10 @@ class App {
             document.querySelectorAll('.live-hr').forEach(el => el.textContent = bpm);
             // Sonifikation: Tonhöhe folgt HF
             if (this.session.active) this.audio.updateHeartRate(bpm);
+            if (this.night.active) {
+                const el = document.getElementById('night-hr');
+                if (el) el.textContent = `${bpm} bpm`;
+            }
         };
 
         this.ble.onConnect = () => {
@@ -2531,6 +2544,10 @@ class App {
             });
         }
 
+        // Nacht-Atemfrequenz-Messung öffnen
+        const nightOpenBtn = document.getElementById('night-open-btn');
+        if (nightOpenBtn) nightOpenBtn.addEventListener('click', () => this._nightOpen());
+
         // Daten löschen
         const clearBtn = document.getElementById('clear-data-btn');
         if (clearBtn) {
@@ -2540,6 +2557,164 @@ class App {
                     window.location.reload();
                 }
             });
+        }
+    }
+
+    // ─── Nacht-Atemfrequenz-Messung ─────────────────────────────────────────
+
+    _nightOpen() {
+        const screen = document.getElementById('night-screen');
+        if (!screen) return;
+        screen.style.display = '';
+        this._nightShowSection(this.night.active ? 'night-recording' : 'night-setup');
+        if (this.night.active) this._nightStartTicker();
+
+        const closeBtn = document.getElementById('night-close-btn');
+        if (closeBtn) closeBtn.onclick = () => { screen.style.display = 'none'; };
+
+        const startBtn = document.getElementById('night-start-btn');
+        if (startBtn) startBtn.onclick = () => this._nightStart();
+
+        const stopBtn = document.getElementById('night-stop-btn');
+        if (stopBtn) stopBtn.onclick = () => this._nightStop();
+
+        const backBtn = document.getElementById('night-back-btn');
+        if (backBtn) backBtn.onclick = () => { screen.style.display = 'none'; };
+    }
+
+    _nightShowSection(id) {
+        ['night-setup', 'night-recording', 'night-result'].forEach(sid => {
+            const el = document.getElementById(sid);
+            if (el) el.style.display = sid === id ? '' : 'none';
+        });
+    }
+
+    async _nightStart() {
+        if (!this.ble.isConnected) {
+            alert('Polar H10 muss verbunden sein.');
+            return;
+        }
+        this.ble.persistentReconnect = true;
+        await this._nightRequestWakeLock();
+
+        this._boundVisibilityHandler = () => this._nightOnVisibilityChange();
+        document.addEventListener('visibilitychange', this._boundVisibilityHandler);
+
+        this.night.onMaxDurationReached = () => this._nightStop();
+        this.night.start();
+
+        this._nightShowSection('night-recording');
+        this._nightStartTicker();
+    }
+
+    _nightStartTicker() {
+        clearInterval(this._nightTicker);
+        this._nightTicker = setInterval(() => {
+            const el = document.getElementById('night-elapsed');
+            if (!el) return;
+            const s   = Math.floor(this.night.durationMs / 1000);
+            const h   = Math.floor(s / 3600);
+            const m   = Math.floor((s % 3600) / 60);
+            const sec = s % 60;
+            el.textContent = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+        }, 1000);
+    }
+
+    _nightOnVisibilityChange() {
+        // Wake Lock kann vom System aufgehoben werden (z.B. kurzes Aufwachen) —
+        // beim Sichtbarwerden erneut anfordern, damit die Aufnahme nicht ausfällt.
+        if (document.visibilityState === 'visible' && this.night.active && !this._wakeLock) {
+            this._nightRequestWakeLock();
+        }
+    }
+
+    async _nightStop() {
+        clearInterval(this._nightTicker);
+        this.night.stop();
+        this.ble.persistentReconnect = false;
+
+        if (this._boundVisibilityHandler) {
+            document.removeEventListener('visibilitychange', this._boundVisibilityHandler);
+            this._boundVisibilityHandler = null;
+        }
+        await this._nightReleaseWakeLock();
+
+        const result = this.night.analyze();
+        await this.db.saveSleepMeasurement(result).catch(() => {});
+        this._nightShowResult(result);
+    }
+
+    _nightShowResult(result) {
+        this._nightShowSection('night-result');
+
+        const avgEl = document.getElementById('night-avg-rate');
+        if (avgEl) {
+            avgEl.innerHTML = result.avgBreathingRate !== null
+                ? `${result.avgBreathingRate.toFixed(1)} <span class="night-unit">Atemz/min</span>`
+                : `— <span class="night-unit">keine Daten</span>`;
+        }
+
+        const metaEl = document.getElementById('night-meta');
+        if (metaEl) {
+            const h = Math.floor(result.durationSec / 3600);
+            const m = Math.floor((result.durationSec % 3600) / 60);
+            metaEl.textContent = `${h}h ${m}min Aufnahme · ${result.validWindowCount} gültige 5-Min-Fenster · ${result.totalRRCount} Herzschläge`;
+        }
+
+        this._nightRenderChart(result.windows);
+    }
+
+    _nightRenderChart(windows) {
+        const canvas = document.getElementById('night-chart');
+        if (!canvas || typeof Chart === 'undefined') return;
+        if (this._nightChart) this._nightChart.destroy();
+
+        const labels = windows.map(w => {
+            const h = Math.floor(w.startOffsetSec / 3600);
+            const m = Math.floor((w.startOffsetSec % 3600) / 60);
+            return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+        });
+
+        this._nightChart = new Chart(canvas, {
+            type: 'line',
+            data: {
+                labels,
+                datasets: [{
+                    data: windows.map(w => w.breathingRate),
+                    borderColor: '#7a9bc0',
+                    backgroundColor: 'rgba(122,155,192,0.08)',
+                    pointRadius: 2,
+                    tension: 0.3,
+                    fill: true,
+                }],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#555', font: { size: 9 }, maxTicksLimit: 8 } },
+                    y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#555', font: { size: 10 } } },
+                },
+            },
+        });
+    }
+
+    async _nightRequestWakeLock() {
+        try {
+            if ('wakeLock' in navigator) {
+                this._wakeLock = await navigator.wakeLock.request('screen');
+                this._wakeLock.addEventListener('release', () => { this._wakeLock = null; });
+            }
+        } catch (err) {
+            console.warn('Wake Lock fehlgeschlagen:', err);
+        }
+    }
+
+    async _nightReleaseWakeLock() {
+        if (this._wakeLock) {
+            try { await this._wakeLock.release(); } catch {}
+            this._wakeLock = null;
         }
     }
 

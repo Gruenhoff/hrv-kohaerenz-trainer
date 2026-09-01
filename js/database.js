@@ -4,7 +4,7 @@
  */
 
 const DB_NAME = 'hrv-trainer';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 
 const STORES = {
     SESSIONS:  'sessions',
@@ -93,6 +93,15 @@ export class Database {
                         autoIncrement: true,
                     });
                     z2.createIndex('date', 'date', { unique: false });
+                }
+
+                // Nacht-Atemfrequenz-Messungen
+                if (!db.objectStoreNames.contains('sleepMeasurements')) {
+                    const sm = db.createObjectStore('sleepMeasurements', {
+                        keyPath: 'id',
+                        autoIncrement: true,
+                    });
+                    sm.createIndex('date', 'date', { unique: false });
                 }
             };
 
@@ -257,6 +266,16 @@ export class Database {
             };
             request.onerror = (e) => reject(e.target.error);
         });
+    }
+
+    // ─── Nacht-Atemfrequenz-Messungen ────────────────────────────────────────
+
+    async saveSleepMeasurement(result) {
+        return this._add('sleepMeasurements', { date: new Date().toISOString(), ...result });
+    }
+
+    async getSleepMeasurements(limit = 10) {
+        return this._getRecent('sleepMeasurements', limit);
     }
 
     // ─── Statistiken ─────────────────────────────────────────────────────────

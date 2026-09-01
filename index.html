@@ -1055,6 +1055,18 @@
                 </div>
             </div>
 
+            <!-- Erweitert -->
+            <div class="settings-section">
+                <div class="settings-section-title">Erweitert</div>
+                <div class="settings-row">
+                    <div>
+                        <div class="settings-label">Nacht-Atemfrequenz</div>
+                        <div class="settings-sublabel">Einmalige Messung im Schlaf (z.B. zur Verifikation gegen andere Geräte)</div>
+                    </div>
+                    <button class="btn-settings-save" id="night-open-btn" style="font-size:0.8rem;padding:0.5rem 1rem;width:auto">Öffnen</button>
+                </div>
+            </div>
+
             <button class="btn-danger" id="clear-data-btn">Alle Daten löschen</button>
 
             <div class="settings-version">HRV Kohärenz-Trainer v1.0 — Powered by Web Bluetooth API</div>
@@ -1191,6 +1203,69 @@
         transform: translateY(-1px);
         box-shadow: 0 4px 12px rgba(0,212,255,0.3);
     }
+</style>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     NACHT-ATEMFREQUENZ-MESSUNG (echtes Schwarz für OLED)
+     ══════════════════════════════════════════════════════════ -->
+<div id="night-screen" style="display:none">
+
+    <!-- Start -->
+    <div id="night-setup">
+        <h2 class="night-title">Nacht-Atemfrequenz</h2>
+        <p class="night-desc">
+            Einmalige passive Messung im Schlaf (keine Atemführung). Der Bildschirm
+            bleibt die ganze Nacht an (gedimmt) und der Polar H10 muss verbunden
+            bleiben. Automatischer Stopp nach spätestens 12 Stunden.
+        </p>
+        <div class="night-sublabel ble-status-text">Nicht verbunden</div>
+        <button class="btn-settings-save" id="night-start-btn">Aufnahme starten</button>
+        <button class="btn-stop-session" id="night-close-btn">Schließen</button>
+    </div>
+
+    <!-- Läuft -->
+    <div id="night-recording" style="display:none">
+        <div id="night-elapsed">00:00:00</div>
+        <div id="night-hr" class="night-sublabel">— bpm</div>
+        <div id="night-status" class="night-sublabel ble-status-text">Aufnahme läuft…</div>
+        <button class="btn-stop-session" id="night-stop-btn">Beenden</button>
+    </div>
+
+    <!-- Ergebnis -->
+    <div id="night-result" style="display:none">
+        <h2 class="night-title">Ergebnis</h2>
+        <div id="night-avg-rate">— <span class="night-unit">Atemz/min</span></div>
+        <div style="height:160px;margin:1rem 0">
+            <canvas id="night-chart"></canvas>
+        </div>
+        <div id="night-meta" class="night-sublabel"></div>
+        <button class="btn-settings-save" id="night-back-btn">Fertig</button>
+    </div>
+
+</div>
+
+<style>
+    #night-screen {
+        position: fixed;
+        inset: 0;
+        z-index: 900;
+        background: #000;
+        color: #d0d0d0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1.5rem;
+    }
+    #night-screen > div { width: 100%; max-width: 360px; text-align: center; }
+    .night-title { font-size: 1.2rem; font-weight: 600; margin-bottom: 0.75rem; color: #a8a8a8; }
+    .night-desc { font-size: 0.85rem; line-height: 1.5; color: #555; margin-bottom: 1.25rem; }
+    .night-sublabel { font-size: 0.85rem; color: #555; margin: 0.5rem 0 1.25rem; }
+    #night-elapsed { font-size: 2.4rem; font-weight: 300; font-variant-numeric: tabular-nums; color: #888; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
+    #night-avg-rate { font-size: 2.6rem; font-weight: 300; color: #c0c0c0; }
+    .night-unit { font-size: 1rem; color: #666; }
+    #night-screen .btn-settings-save { margin-top: 0.5rem; background: #1a1a1a; color: #999; box-shadow: none; }
+    #night-screen .btn-stop-session { margin-top: 0.75rem; background: transparent; border: 1px solid #333; color: #666; }
 </style>
 
 
