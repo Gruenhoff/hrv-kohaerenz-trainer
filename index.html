@@ -373,17 +373,17 @@
                     <div class="p1cal-steps">
                         <div class="p1cal-step-item">
                             <div class="p1cal-step-dot p1cal-active" id="p1cal-dot-0">1</div>
-                            <div class="p1cal-step-label">Baseline</div>
+                            <div class="p1cal-step-label">Start</div>
                         </div>
                         <div class="p1cal-step-line"></div>
                         <div class="p1cal-step-item">
                             <div class="p1cal-step-dot" id="p1cal-dot-1">2</div>
-                            <div class="p1cal-step-label">Sweep</div>
+                            <div class="p1cal-step-label">Scan</div>
                         </div>
                         <div class="p1cal-step-line"></div>
                         <div class="p1cal-step-item">
                             <div class="p1cal-step-dot" id="p1cal-dot-2">3</div>
-                            <div class="p1cal-step-label">Optimal</div>
+                            <div class="p1cal-step-label">Ergebnis</div>
                         </div>
                     </div>
 
@@ -400,8 +400,8 @@
                     </div>
 
                     <!-- Titel / Untertitel -->
-                    <div class="body-scan-step" id="p1cal-title">Baseline · 60s</div>
-                    <div class="body-scan-baseline" id="p1cal-subtitle">Setze dich aufrecht hin und entspanne dich</div>
+                    <div class="body-scan-step" id="p1cal-title">5-Minuten-Check</div>
+                    <div class="body-scan-baseline" id="p1cal-subtitle">Prüft, ob deine Frequenz heute abweicht</div>
 
                     <!-- Frequenz-Label (Sweep) -->
                     <div class="p1cal-freq" id="p1cal-freq" style="display:none">—</div>
@@ -646,77 +646,45 @@
             <div id="rez-home">
                 <div class="rez-header">
                     <h2>Resonanzfrequenz</h2>
-                    <p class="rez-subhead">Optimaler Atemrhythmus in 4 Schritten · Jeden Schritt einzeln starten</p>
+                    <p class="rez-subhead">Optimaler Atemrhythmus in 2 Protokollen · Jedes einzeln startbar</p>
                 </div>
 
-                <!-- Schritt-Karten -->
+                <!-- Protokoll-Karten -->
                 <div class="rez-step-cards">
                     <div class="rez-step-card" id="rez-card-1">
                         <div class="rez-step-card-header">
                             <div class="rez-step-num" id="rez-badge-1">1</div>
                             <div class="rez-step-body">
-                                <div class="rez-step-title">Grob-Scan</div>
-                                <div class="rez-step-desc">6,5 · 6,0 · 5,5 · 5,0 · 4,5 Atemz/min · 5 × 4 Min</div>
+                                <div class="rez-step-title">Frequenz-Scan</div>
+                                <div class="rez-step-desc">15 Kandidaten 4,5–8,0/min · Grobsieb + Feinvalidierung</div>
                             </div>
-                            <div class="rez-step-time">20 Min</div>
+                            <div class="rez-step-time">~31 Min</div>
                         </div>
                         <div class="rez-step-card-result" id="rez-result-1" style="display:none">
                             <span class="rez-result-label">Optimum</span>
                             <span class="rez-result-val" id="rez-result-val-1">—</span>
                         </div>
-                        <button class="rez-step-start-btn" id="rez-start-1">Schritt 1 starten</button>
+                        <button class="rez-step-start-btn" id="rez-start-1">Protokoll 1 starten</button>
                     </div>
 
                     <div class="rez-step-card" id="rez-card-2">
                         <div class="rez-step-card-header">
                             <div class="rez-step-num" id="rez-badge-2">2</div>
                             <div class="rez-step-body">
-                                <div class="rez-step-title">Fein-Scan</div>
-                                <div class="rez-step-desc">±0,2 um Optimum in 0,1er-Schritten · 5 × 4 Min</div>
+                                <div class="rez-step-title">Verhältnis & Pausen</div>
+                                <div class="rez-step-desc">Ein:Aus-Verhältnis + Halt-Ein/Halt-Aus bei optimaler Frequenz</div>
                             </div>
-                            <div class="rez-step-time">20 Min</div>
+                            <div class="rez-step-time">~27 Min</div>
                         </div>
                         <div class="rez-step-card-result" id="rez-result-2" style="display:none">
                             <span class="rez-result-label">Optimum</span>
                             <span class="rez-result-val" id="rez-result-val-2">—</span>
                         </div>
-                        <button class="rez-step-start-btn" id="rez-start-2">Schritt 2 starten</button>
-                    </div>
-
-                    <div class="rez-step-card" id="rez-card-3">
-                        <div class="rez-step-card-header">
-                            <div class="rez-step-num" id="rez-badge-3">3</div>
-                            <div class="rez-step-body">
-                                <div class="rez-step-title">Verhältnis-Scan</div>
-                                <div class="rez-step-desc">Ein:Aus 35:65 · 40:60 · 45:55 · 50:50 · 55:45 · 5 × 4 Min</div>
-                            </div>
-                            <div class="rez-step-time">20 Min</div>
-                        </div>
-                        <div class="rez-step-card-result" id="rez-result-3" style="display:none">
-                            <span class="rez-result-label">Optimum</span>
-                            <span class="rez-result-val" id="rez-result-val-3">—</span>
-                        </div>
-                        <button class="rez-step-start-btn" id="rez-start-3">Schritt 3 starten</button>
-                    </div>
-
-                    <div class="rez-step-card" id="rez-card-4">
-                        <div class="rez-step-card-header">
-                            <div class="rez-step-num" id="rez-badge-4">4</div>
-                            <div class="rez-step-body">
-                                <div class="rez-step-title">Pausen-Scan</div>
-                                <div class="rez-step-desc">Halt-In/Halt-Out grob (6) + fein (5) · 11 × 4 Min</div>
-                            </div>
-                            <div class="rez-step-time">44 Min</div>
-                        </div>
-                        <div class="rez-step-card-result" id="rez-result-4" style="display:none">
-                            <span class="rez-result-label">Optimum</span>
-                            <span class="rez-result-val" id="rez-result-val-4">—</span>
-                        </div>
-                        <button class="rez-step-start-btn" id="rez-start-4">Schritt 4 starten</button>
+                        <button class="rez-step-start-btn" id="rez-start-2">Protokoll 2 starten</button>
                     </div>
                 </div><!-- /.rez-step-cards -->
 
-                <div class="rez-time-hint">⏱ Komplett-Test ca. 104 Minuten · Polar H10 erforderlich</div>
+                <div class="rez-time-hint">⏱ Komplett-Test ca. 58 Minuten · Polar H10 erforderlich</div>
 
                 <button class="rez-primary-btn" id="rez-start-full">Komplett-Test starten</button>
 
@@ -731,26 +699,22 @@
             <!-- ═══ TEST LÄUFT ════════════════════════════════════ -->
             <div id="rez-running" style="display:none">
 
-                <!-- Schritt-Header -->
+                <!-- Protokoll-Header -->
                 <div class="rez-run-header">
                     <div class="rez-step-indicator">
                         <span class="rez-step-dot" id="rez-dot-1"></span>
                         <span class="rez-step-line" id="rez-line-1"></span>
                         <span class="rez-step-dot" id="rez-dot-2"></span>
-                        <span class="rez-step-line" id="rez-line-2"></span>
-                        <span class="rez-step-dot" id="rez-dot-3"></span>
-                        <span class="rez-step-line" id="rez-line-3"></span>
-                        <span class="rez-step-dot" id="rez-dot-4"></span>
                     </div>
-                    <div id="rez-step-title" class="rez-run-step-title">Schritt 1 · Grob-Scan</div>
+                    <div id="rez-step-title" class="rez-run-step-title">Protokoll 1 · Grobsieb</div>
                 </div>
 
                 <!-- Aktuelles Muster + Phase -->
                 <div class="rez-pattern-card">
                     <div class="rez-pattern-name" id="rez-pattern-name">—</div>
                     <div class="rez-phase-row">
-                        <span class="rez-phase-badge" id="rez-phase-badge" data-phase="acclimation">Akklimatisierung</span>
-                        <span class="rez-phase-countdown" id="rez-phase-countdown">2:00</span>
+                        <span class="rez-phase-badge" id="rez-phase-badge" data-phase="measurement">Messung</span>
+                        <span class="rez-phase-countdown" id="rez-phase-countdown">0:00</span>
                     </div>
                     <!-- Muster-Fortschritts-Punkte -->
                     <div class="rez-pattern-dots" id="rez-pattern-dots"></div>
@@ -763,15 +727,15 @@
                     <span id="rez-breath-countdown" class="breath-countdown-lbl"></span>
                 </div>
 
-                <!-- RMSSD Live + Messungs-Durchschnitt -->
+                <!-- Live-Metrik + Kandidaten-Durchschnitt (Amplitude oder RMSSD, je nach Phase) -->
                 <div class="rez-rmssd-row">
                     <div class="rez-rmssd-tile">
-                        <div class="rez-rmssd-value" id="rez-live-rmssd">—</div>
-                        <div class="rez-rmssd-label">RMSSD live</div>
+                        <div class="rez-rmssd-value" id="rez-live-metric">—</div>
+                        <div class="rez-rmssd-label" id="rez-live-metric-label">Amplitude live</div>
                     </div>
                     <div class="rez-rmssd-tile rez-avg-tile">
-                        <div class="rez-rmssd-value" id="rez-avg-rmssd">—</div>
-                        <div class="rez-rmssd-label">Ø Messung</div>
+                        <div class="rez-rmssd-value" id="rez-avg-metric">—</div>
+                        <div class="rez-rmssd-label" id="rez-avg-metric-label">Ø Kandidat</div>
                     </div>
                 </div>
 
@@ -780,24 +744,24 @@
             </div><!-- /#rez-running -->
 
 
-            <!-- ═══ SCHRITT-ERGEBNIS ══════════════════════════════ -->
+            <!-- ═══ PROTOKOLL-ÜBERGANG (im Komplett-Test) ══════════════════════ -->
             <div id="rez-step-done" style="display:none">
                 <div class="rez-header">
-                    <h2 id="rez-done-title">Schritt 1 abgeschlossen</h2>
-                    <p class="rez-subhead" id="rez-done-sub">Bestes Muster: —</p>
+                    <h2 id="rez-done-title">Protokoll 1 abgeschlossen</h2>
+                    <p class="rez-subhead" id="rez-done-sub">Optimum: —</p>
                 </div>
 
                 <div class="z2-samples-table-wrap">
                     <table class="z2-table" id="rez-step-table">
                         <thead>
-                            <tr><th>Muster</th><th>Ø RMSSD</th><th></th></tr>
+                            <tr><th>Kandidat</th><th>RMSSD</th><th></th></tr>
                         </thead>
                         <tbody></tbody>
                     </table>
                 </div>
 
-                <button class="rez-primary-btn" id="rez-next-btn">Weiter zu Schritt 2</button>
-                <button class="btn-stop-session" id="rez-cancel-btn" style="margin-top:0.5rem">Test beenden</button>
+                <button class="rez-primary-btn" id="rez-next-btn">Weiter zu Protokoll 2</button>
+                <button class="btn-stop-session" id="rez-cancel-btn" style="margin-top:0.5rem">Hier beenden</button>
             </div><!-- /#rez-step-done -->
 
 
@@ -805,13 +769,13 @@
             <div id="rez-final" style="display:none">
                 <div class="rez-header">
                     <h2>Dein optimaler Atemrhythmus</h2>
-                    <p class="rez-subhead">Ermittelt via RMSSD-Optimierung</p>
+                    <p class="rez-subhead">Ermittelt via RMSSD + Kohärenz</p>
                 </div>
 
                 <div class="rez-final-card">
                     <div class="rez-final-rmssd">
                         <span id="rez-final-rmssd-val">—</span>
-                        <span class="rez-final-unit">ms RMSSD</span>
+                        <span class="rez-final-unit" id="rez-final-unit">ms RMSSD</span>
                     </div>
                     <div class="rez-rhythm-grid">
                         <div class="rez-rhythm-row">
@@ -833,9 +797,9 @@
                     </div>
                 </div>
 
-                <!-- Vergleichs-Tabelle aller 3 Schritte -->
+                <!-- Vergleichs-Tabelle (nur bei Protokoll 2) -->
                 <div class="z2-samples-table-wrap" id="rez-final-table-wrap">
-                    <div class="section-title" style="padding:0.5rem 0 0.5rem">Schritt 4 · Pausen-Scan (alle Muster)</div>
+                    <div class="section-title" style="padding:0.5rem 0 0.5rem" id="rez-final-table-title">Alle Muster</div>
                     <table class="z2-table" id="rez-final-table">
                         <thead><tr><th>Muster</th><th>Ø RMSSD</th><th></th></tr></thead>
                         <tbody></tbody>
@@ -846,22 +810,17 @@
                 <button class="btn-stop-session" id="rez-final-back-btn" style="margin-top:0.5rem">Zurück zur Übersicht</button>
             </div><!-- /#rez-final -->
 
-            <!-- ═══ MANUELLER STARTWERT ══════════════════════════════ -->
+            <!-- ═══ MANUELLER STARTWERT (Protokoll 2 ohne Protokoll-1-Ergebnis) ══ -->
             <div id="rez-manual-overlay" class="modal-overlay" style="display:none">
                 <div class="modal" style="max-width:340px;width:90%">
-                    <div class="modal-title" id="rez-manual-title">Startwert eingeben</div>
+                    <div class="modal-title">Startfrequenz eingeben</div>
                     <p id="rez-manual-desc" style="font-size:0.82rem;color:var(--text-secondary);margin:0.5rem 0 1rem"></p>
                     <div>
-                        <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:0.3rem">Frequenz (Atemz/min)</label>
-                        <input id="rez-manual-bpm" type="text" inputmode="decimal" placeholder="z. B. 4,9"
+                        <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:0.3rem">Frequenz (Atemz/min, 4,5–8,0)</label>
+                        <input id="rez-manual-bpm" type="text" inputmode="decimal" placeholder="z. B. 5,75"
                             style="width:100%;padding:0.55rem 0.75rem;background:var(--bg-card);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:var(--text-primary);font-size:1rem;box-sizing:border-box">
                     </div>
-                    <div id="rez-manual-ratio-wrap" style="display:none;margin-top:0.75rem">
-                        <label style="font-size:0.8rem;color:var(--text-secondary);display:block;margin-bottom:0.3rem">Ein:Aus-Verhältnis (Einatmen-Anteil %)</label>
-                        <input id="rez-manual-ratio" type="text" inputmode="decimal" placeholder="z. B. 40:60 oder 40"
-                            style="width:100%;padding:0.55rem 0.75rem;background:var(--bg-card);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:var(--text-primary);font-size:1rem;box-sizing:border-box">
-                    </div>
-                    <button class="rez-primary-btn" id="rez-manual-ok" style="margin-top:1.25rem">Schritt starten</button>
+                    <button class="rez-primary-btn" id="rez-manual-ok" style="margin-top:1.25rem">Protokoll 2 starten</button>
                     <button class="btn-stop-session" id="rez-manual-cancel" style="margin-top:0.5rem">Abbrechen</button>
                 </div>
             </div>

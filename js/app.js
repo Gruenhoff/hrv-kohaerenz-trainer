@@ -11,7 +11,7 @@ import { BreathPacer }    from './breathpacer.js';
 import { HRSonification } from './audio.js';
 import { Dashboard }      from './dashboard.js';
 import { Zone2 }          from './zone2.js';
-import { ResonanzTest }   from './resonanz.js';
+import { FrequencyTest, RhythmTest, DailyCheck, rhythmToString } from './resonanz.js';
 
 // ─── Phasenspezifische Dauer-Optionen ────────────────────────────────────────
 const PHASE_DURATIONS = {
@@ -63,9 +63,9 @@ class App {
         this.hrv        = new HRVAnalyzer();
         this.audio      = new HRSonification();
         this.zone2         = null;   // wird nach db.open() initialisiert
-        this.resonanzTest  = null;
-        this.resonanzPacer = null;
-        this._rezTicker    = null;
+        this._calibTest     = null;  // laufendes FrequencyTest/RhythmTest/DailyCheck
+        this._calibTicker   = null;
+        this._calibFullChain = false;
         this.dashboard     = null;
         this.visualizer      = null;
         this.spectrum        = null;
@@ -832,146 +832,120 @@ class App {
     }
 
     /**
-     * Body-Scan (60 s Vorbereitung) — geführte Haltungs- und
-     * Aufmerksamkeitssequenz, dabei Baseline-RMSSD messen.
-     * Resolvet wenn fertig oder übersprungen.
+     * Protokoll 3 — 5-Minuten-Check vor der Session: prüft, ob die gespeicherte
+     * Resonanzfrequenz heute abweicht (5 Kandidaten ±1,0 bpm, zyklus-ausgerichtete
+     * HRmax−HRmin-Messung), und blendet eine Abweichung gedämpft ein. Läuft nur
+     * einmal pro Tag (außer this._forceDailyCheck ist gesetzt). Resolvet wenn
+     * fertig oder übersprungen.
      */
-    async _runPhase1Calibration() {
+    async _runDailyCheck() {
         const screen = document.getElementById('p1cal-screen');
         if (!screen) return;
 
+        const forceRun = this._forceDailyCheck === true;
+        this._forceDailyCheck = false;
+
+        if (!forceRun) {
+            const already = await this.db.getTodaysDailyCheck();
+            if (already) return; // heute schon gelaufen — sofort weiter zur Session
+        }
+
         // ── Setup ────────────────────────────────────────────────────────────
         this.hrv.reset();
-        this._bodyScanFFT = null;
         document.getElementById('session-setup').style.display = 'none';
         screen.style.display = '';
 
-        const ring      = document.getElementById('p1cal-ring');
-        const countEl   = document.getElementById('p1cal-countdown');
-        const titleEl   = document.getElementById('p1cal-title');
-        const subtitleEl = document.getElementById('p1cal-subtitle');
-        const freqEl    = document.getElementById('p1cal-freq');
-        const pacerWrap = document.getElementById('p1cal-pacer-wrap');
-        const skipBtn   = document.getElementById('p1cal-skip-btn');
-        const circ      = 2 * Math.PI * 54;
+        const ring       = document.getElementById('p1cal-ring');
+        const countEl    = document.getElementById('p1cal-countdown');
+        const titleEl     = document.getElementById('p1cal-title');
+        const subtitleEl  = document.getElementById('p1cal-subtitle');
+        const freqEl      = document.getElementById('p1cal-freq');
+        const pacerWrap   = document.getElementById('p1cal-pacer-wrap');
+        const skipBtn     = document.getElementById('p1cal-skip-btn');
+        const circ        = 2 * Math.PI * 54;
 
-        let skipped = false;
-        if (skipBtn) skipBtn.onclick = () => { skipped = true; };
-
-        // Sweep-Frequenzen: gespeicherte Resonanz ± 0.2/min (auf 1 Dezimale)
-        const center = Math.round(this.hrv.practicalBreathFreq * 600) / 10;
-        const freqs  = [center - 0.2, center, center + 0.2]
-            .map(f => Math.round(Math.max(4.5, Math.min(8.0, f)) * 10) / 10);
-
-        // ── Helper: eine Phase als Countdown ablaufen lassen ─────────────────
-        const runPhase = (totalSec, onTick) => new Promise(resolve => {
-            let rem = totalSec;
-            if (ring)    { ring.style.strokeDasharray = circ; ring.style.strokeDashoffset = circ; }
-            if (countEl) countEl.textContent = rem;
-
-            const id = setInterval(() => {
-                if (skipped) { clearInterval(id); resolve(false); return; }
-                rem--;
-                if (countEl) countEl.textContent = rem;
-                if (ring)    ring.style.strokeDashoffset = circ * (1 - (totalSec - rem) / totalSec);
-                onTick?.(rem);
-                if (rem <= 0) { clearInterval(id); resolve(true); }
-            }, 1000);
-        });
-
-        // ── Schritt 1: Baseline 60s ───────────────────────────────────────────
         this._p1calSetStep(0);
-        if (titleEl)    titleEl.textContent    = 'Baseline · 60s';
-        if (subtitleEl) subtitleEl.textContent = 'Setze dich aufrecht hin und atme natürlich';
+        if (titleEl)    titleEl.textContent    = '5-Minuten-Check';
+        if (subtitleEl) subtitleEl.textContent = 'Prüft, ob deine Frequenz heute abweicht';
         if (pacerWrap)  pacerWrap.style.display = 'none';
         if (freqEl)     freqEl.style.display    = 'none';
+        if (countEl)    countEl.textContent     = '';
+        if (ring)       { ring.style.strokeDasharray = circ; ring.style.strokeDashoffset = circ; }
 
-        await runPhase(60, rem => {
-            if (rem <= 30 && subtitleEl && this.hrv.dataSpanSeconds >= 10) {
-                const rmssd = Math.round(this.hrv.rmssd());
-                if (rmssd > 0) subtitleEl.textContent = `Baseline-RMSSD: ${rmssd} ms`;
-            }
-        });
-        if (skipped) { screen.style.display = 'none'; return; }
+        let skipped = false;
+        let resolveSkip;
+        const skipPromise = new Promise(r => { resolveSkip = r; });
+        if (skipBtn) skipBtn.onclick = () => { skipped = true; resolveSkip(); };
 
-        // FFT auf Baseline-Daten → Resonanz verfeinern
-        if (this.hrv.dataSpanSeconds >= 30) {
-            const fft = this.hrv.frequencyAnalysis();
-            if (fft) { this.hrv.updateResonanceFrequency(); this._bodyScanFFT = fft; }
-        }
+        const storedRhythm = this.session.breathRhythm
+            ?? await this.db.getSetting('breathRhythm', { inhale: 5000, holdIn: 0, exhale: 5000, holdOut: 0 });
 
-        // ── Schritt 2: Sweep 3 × 30s ─────────────────────────────────────────
+        await Promise.race([new Promise(r => setTimeout(r, 1000)), skipPromise]);
+        if (skipped) { screen.style.display = 'none'; document.getElementById('session-setup').style.display = ''; return; }
+
         this._p1calSetStep(1);
         if (pacerWrap) pacerWrap.style.display = '';
 
-        const sweepResults = [];
-        for (let i = 0; i < freqs.length; i++) {
-            if (skipped) break;
-            const freq    = freqs[i];
-            const cycleMs = Math.round(60000 / freq);
-            const inhale  = Math.round(cycleMs * 0.35 / 100) * 100;
-            const exhale  = cycleMs - inhale;
+        const check = new DailyCheck(this.hrv, this.db, storedRhythm);
+        this._dailyCheck = check;
 
-            if (titleEl)    titleEl.textContent    = `Frequenz ${i + 1} / 3`;
+        check.onRhythmChange = (rhythm) => this._calibSetPacer('p1cal-pacer-container', 'p1cal-breath-label', rhythm, check);
+        check.onCandidateStart = (idx, total, bpm) => {
+            if (titleEl)    titleEl.textContent    = `Kandidat ${idx + 1} / ${total}`;
             if (subtitleEl) subtitleEl.textContent = 'Folge dem Atempunkt';
-            if (freqEl)     { freqEl.textContent = `${freq.toFixed(1)} Atemz/min`; freqEl.style.display = ''; }
+            if (freqEl)     { freqEl.textContent = `${bpm.toFixed(2)} Atemz/min`; freqEl.style.display = ''; }
+            if (countEl)    countEl.textContent = `${idx + 1}/${total}`;
+            if (ring)       ring.style.strokeDashoffset = circ * (1 - idx / total);
+        };
 
-            // Pacer starten
-            if (this.pacer) { this.pacer.stop(); this.pacer = null; }
-            const cont  = document.getElementById('p1cal-pacer-container');
-            const label = document.getElementById('p1cal-breath-label');
-            if (cont) {
-                this.pacer = new BreathPacer(cont, { inhale, holdIn: 0, exhale, holdOut: 0 }, label, null, this.audio);
-                this.pacer.start();
-            }
+        const finished = new Promise(resolve => {
+            check.onComplete   = (winner) => resolve(winner);
+            check.onCancelled  = () => resolve(null);
+        });
 
-            const rsaSamples = [];
-            await runPhase(30, rem => {
-                if (rem <= 20) {
-                    rsaSamples.push(this.hrv.rsaAmplitude());          // Entscheidungsmetrik
-                    if (subtitleEl) {
-                        const rmssd = Math.round(this.hrv.rmssd());
-                        subtitleEl.textContent = `RMSSD: ${rmssd} ms`;
-                    }
-                }
-            });
-            if (this.pacer) { this.pacer.stop(); this.pacer = null; }
+        check.start();
+        const winner = await Promise.race([finished, skipPromise.then(() => { check.stop(); return null; })]);
+        this._calibStopPacer();
 
-            const validRsa = rsaSamples.filter(v => v > 0);
-            const avgRsa   = validRsa.length ? validRsa.reduce((a, b) => a + b) / validRsa.length : 0;
-            sweepResults.push({ freq, avgRsa });
-        }
-        if (skipped) { screen.style.display = 'none'; return; }
+        if (!winner) { screen.style.display = 'none'; document.getElementById('session-setup').style.display = ''; return; }
 
-        // ── Schritt 3: Bestes Ergebnis → Session-Rhythmus setzen ─────────────
         this._p1calSetStep(2);
         if (pacerWrap) pacerWrap.style.display = 'none';
         if (freqEl)    freqEl.style.display    = 'none';
 
-        const winner   = sweepResults.reduce((best, r) => r.avgRsa > best.avgRsa ? r : best);
-        const wCycleMs = Math.round(60000 / winner.freq);
-        const wInhale  = Math.round(wCycleMs * 0.35 / 100) * 100;
-        const wExhale  = wCycleMs - wInhale;
-        this.session.breathRhythm = { inhale: wInhale, holdIn: 0, exhale: wExhale, holdOut: 0 };
+        this.session.breathRhythm = winner.rhythm;
 
-        // Resonanzfrequenz und Rhythmus persistieren
-        this.hrv.resonanceFreq = winner.freq / 60;
-        await Promise.all([
-            this.db.setSetting('resonanceFreq', this.hrv.resonanceFreq),
-            this.db.setSetting('breathRhythm',  this.session.breathRhythm),
-        ]);
-
-        if (titleEl)    titleEl.textContent    = `Optimal: ${winner.freq.toFixed(1)} Atemz/min`;
+        if (titleEl)    titleEl.textContent    = `Angepasst: ${winner.bpm.toFixed(2)} Atemz/min`;
         if (subtitleEl) subtitleEl.textContent =
-            `${(wInhale / 1000).toFixed(1)}s ein  ·  ${(wExhale / 1000).toFixed(1)}s aus`;
+            `${(winner.rhythm.inhale / 1000).toFixed(1)}s ein  ·  ${(winner.rhythm.exhale / 1000).toFixed(1)}s aus`;
         if (countEl) countEl.textContent = '✓';
         if (ring)    ring.style.strokeDashoffset = '0';
 
-        await new Promise(r => setTimeout(r, 2500));
+        await new Promise(r => setTimeout(r, 1800));
         screen.style.display = 'none';
     }
 
-    /** Schritt-Dots der Phase-1-Kalibrierung aktualisieren (0=Baseline, 1=Sweep, 2=Optimal) */
+    /**
+     * Gemeinsamer BreathPacer-Helfer für die Kalibrierungs-Protokolle:
+     * startet einen neuen Pacer mit gegebenem Rhythmus und leitet dessen
+     * Phasenwechsel an den laufenden Test (CalibrationTestBase) weiter.
+     */
+    _calibSetPacer(containerId, labelId, rhythm, test, countdownId) {
+        this._calibStopPacer();
+        const cont     = document.getElementById(containerId);
+        const label    = document.getElementById(labelId);
+        const countdown = countdownId ? document.getElementById(countdownId) : null;
+        if (!cont) return;
+        this.pacer = new BreathPacer(cont, rhythm, label, countdown, this.audio);
+        this.pacer.onPhaseChange = (phase) => test.notifyPhaseChange(phase);
+        this.pacer.start();
+    }
+
+    _calibStopPacer() {
+        if (this.pacer) { this.pacer.stop(); this.pacer.destroy(); this.pacer = null; }
+    }
+
+    /** Schritt-Dots der Kalibrierungs-Screens aktualisieren (0=Start, 1=Scan, 2=Ergebnis) */
     _p1calSetStep(step) {
         for (let i = 0; i <= 2; i++) {
             const dot = document.getElementById(`p1cal-dot-${i}`);
@@ -1076,8 +1050,8 @@ class App {
         this._setSessionPhase(phase);
 
         if (phase === 1) {
-            // Phase 1: Auto-Kalibrierung (Baseline + 3-Punkt-Sweep → optimale Frequenz)
-            await this._runPhase1Calibration();
+            // Phase 1: Protokoll-3-Check (5 Min, einmal pro Tag) → optimale Frequenz bestätigen/anpassen
+            await this._runDailyCheck();
         } else {
             // Andere Phasen: optionaler Body-Scan
             if (this.bodyScanEnabled) await this._runBodyScan();
@@ -1841,106 +1815,223 @@ class App {
         this._loadAnchors();
     }
 
-    // ─── Resonanztest-View ───────────────────────────────────────────────────
+    // ─── Resonanztest-View: Protokoll 1 (Frequenz) + Protokoll 2 (Verhältnis/Pausen) ─
 
     async _initResonanzView() {
         this._rezShowSection('rez-home');
         await this._rezLoadStepCards();
         await this._rezLoadLastResult();
 
-        // Einzelne Schritt-Buttons
-        [1, 2, 3, 4].forEach(n => {
-            const btn = document.getElementById(`rez-start-${n}`);
-            if (btn) btn.onclick = () => this._rezStartSingleStep(n);
-        });
+        const btn1 = document.getElementById('rez-start-1');
+        if (btn1) btn1.onclick = () => this._rezStartProtocol1(false);
 
-        // Komplett-Test-Button
+        const btn2 = document.getElementById('rez-start-2');
+        if (btn2) btn2.onclick = () => this._rezStartProtocol2Entry();
+
         const fullBtn = document.getElementById('rez-start-full');
-        if (fullBtn) fullBtn.onclick = () => this._rezStartFullTest();
+        if (fullBtn) fullBtn.onclick = () => this._rezStartProtocol1(true);
 
-        // Stop-Button (im laufenden Test)
         const stopBtn = document.getElementById('rez-stop-btn');
         if (stopBtn) {
             stopBtn.onclick = () => {
-                this.resonanzTest?.stop();
-                if (this.resonanzPacer) this.resonanzPacer.stop();
-                clearInterval(this._rezTicker);
+                this._calibTest?.stop();
+                this._calibStopPacer();
+                clearInterval(this._calibTicker);
                 this._rezShowSection('rez-home');
                 this._rezLoadStepCards();
             };
         }
 
-        // Wenn Test bereits läuft: Running-View wiederherstellen
-        if (this.resonanzTest?.active) {
-            this._rezShowSection('rez-running');
-            this._rezStartTicker();
-        }
+        if (this._calibTest?.active) this._rezShowSection('rez-running');
     }
 
-    _rezSetupCallbacks() {
-        this.resonanzTest.onPatternStart = (step, idx, pattern, total, step4Phase) => {
-            this._rezOnPatternStart(step, idx, pattern, total, step4Phase);
-        };
-        this.resonanzTest.onPhaseChange = (phase) => {
-            const badge = document.getElementById('rez-phase-badge');
-            if (badge) {
-                badge.textContent   = phase === 'acclimation' ? 'Akklimatisierung' : 'Messung';
-                badge.dataset.phase = phase;
+    _rezSetStepDots(active) {
+        [1, 2].forEach(n => {
+            const dot = document.getElementById(`rez-dot-${n}`);
+            if (dot) {
+                dot.className = 'rez-step-dot' + (n < active ? ' done' : n === active ? ' active' : '');
+                dot.textContent = n < active ? '✓' : String(n);
             }
-        };
-        this.resonanzTest.onRmssdSample = (rmssd, avg) => {
-            this._rezUpdateRmssd(rmssd, avg);
-        };
-        this.resonanzTest.onStep4Progress = () => {
-            this._showToast('Phase 4B: Fein-Scan startet…');
-        };
-        this.resonanzTest.onStepDone = (step, results, optimumIdx) => {
-            this._rezOnStepDone(step, results, optimumIdx);
-        };
-        this.resonanzTest.onComplete = () => {};  // _rezOnStepDone(4) übernimmt die Navigation
+        });
+        const line = document.getElementById('rez-line-1');
+        if (line) line.className = 'rez-step-line' + (active > 1 ? ' done' : '');
     }
 
-    async _rezStartSingleStep(n) {
-        if (!this.ble.isConnected) {
-            alert('Polar H10 muss verbunden sein.');
-            return;
+    _rezSetPatternDots(total, idx) {
+        const wrap = document.getElementById('rez-pattern-dots');
+        if (wrap) {
+            wrap.innerHTML = Array.from({ length: total }, (_, i) =>
+                `<div class="rez-pdot${i < idx ? ' done' : i === idx ? ' active' : ''}"></div>`
+            ).join('');
         }
-        let prevOptimum = n > 1 ? await this.db.getSetting(`resonanzStep${n - 1}Optimum`) : null;
-        if (n > 1 && !prevOptimum) {
-            prevOptimum = await this._rezGetManualInput(n);
-            if (!prevOptimum) return;
+    }
+
+    _rezStartElapsedTicker() {
+        clearInterval(this._calibTicker);
+        const startTs = performance.now();
+        this._calibTicker = setInterval(() => {
+            const el = document.getElementById('rez-phase-countdown');
+            if (el) {
+                const s = Math.floor((performance.now() - startTs) / 1000);
+                el.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+            }
+        }, 1000);
+    }
+
+    _rezSetMetricLabels(liveLabel, avgLabel) {
+        const l = document.getElementById('rez-live-metric-label');
+        const a = document.getElementById('rez-avg-metric-label');
+        if (l) l.textContent = liveLabel;
+        if (a) a.textContent = avgLabel;
+        const liveEl = document.getElementById('rez-live-metric');
+        const avgEl  = document.getElementById('rez-avg-metric');
+        if (liveEl) liveEl.textContent = '—';
+        if (avgEl)  avgEl.textContent  = '—';
+    }
+
+    /**
+     * Kompakte Muster-Beschriftung für Protokoll-2-Kandidaten.
+     * @param {'A'|'B'} stage
+     * @param {object} info - bei 'A': {ratioIn, rhythm}; bei 'B': {rhythm} ODER
+     *   ein bereits geflachtes Ergebnisobjekt {holdIn, holdOut, ...}
+     */
+    _rezStageLabel(stage, info) {
+        const s = ms => (ms / 1000).toFixed(1) + 's';
+        if (stage === 'A') {
+            const rhythm = info.rhythm ?? info;
+            return `${info.ratioIn}:${100 - info.ratioIn}  (${s(rhythm.inhale)}/${s(rhythm.exhale)})`;
         }
-        this.resonanzTest = new ResonanzTest(this.hrv, this.db);
-        this._rezSetupCallbacks();
+        const { holdIn, holdOut } = info.rhythm ?? info;
+        if (!holdIn && !holdOut) return 'kein Halt';
+        const parts = [];
+        if (holdIn)  parts.push(`H-In ${s(holdIn)}`);
+        if (holdOut) parts.push(`H-Out ${s(holdOut)}`);
+        return parts.join(' + ');
+    }
+
+    // ── Protokoll 1: Frequenz-Scan ──────────────────────────────────────────
+
+    _rezStartProtocol1(chainToProtocol2) {
+        if (!this.ble.isConnected) { alert('Polar H10 muss verbunden sein.'); return; }
+        this._calibFullChain = chainToProtocol2;
+
+        const test = new FrequencyTest(this.hrv, this.db);
+        this._calibTest = test;
         this.audio.unlock();
         this._rezShowSection('rez-running');
-        this.resonanzTest.startStep(n, prevOptimum);
-        this._rezStartTicker();
+        this._rezSetStepDots(1);
+        document.getElementById('rez-step-title').textContent = 'Protokoll 1 · Grobsieb';
+
+        test.onRhythmChange = (rhythm) => this._calibSetPacer('rez-pacer-container', 'rez-breath-label', rhythm, test, 'rez-breath-countdown');
+
+        test.onCandidateStart = (idx, total, bpm) => {
+            document.getElementById('rez-step-title').textContent = 'Protokoll 1 · Grobsieb';
+            document.getElementById('rez-pattern-name').textContent = `Kandidat ${idx + 1}/${total} · ${bpm.toFixed(2)} Atemz/min`;
+            document.getElementById('rez-phase-badge').textContent = 'Grobsieb';
+            this._rezSetMetricLabels('Amplitude live', 'Ø Kandidat');
+            this._rezSetPatternDots(total, idx);
+            this._rezStartElapsedTicker();
+        };
+        test.onCycleSample = (c, total, amp) => {
+            const el = document.getElementById('rez-live-metric');
+            if (el) el.textContent = amp !== null ? amp.toFixed(1) + ' bpm' : '—';
+            document.getElementById('rez-phase-badge').textContent = `Zyklus ${c}/${total}`;
+        };
+        test.onPhase1Done = (raw, smoothed, finalists) => {
+            const names = finalists.map(f => f.bpm.toFixed(2)).join(', ');
+            this._showToast(`Grobsieb fertig — Top 5: ${names} Atemz/min`);
+        };
+
+        test.onFinalistStart = (idx, total, bpm, subPhase) => {
+            document.getElementById('rez-step-title').textContent = 'Protokoll 1 · Feinvalidierung';
+            document.getElementById('rez-pattern-name').textContent = `Finalist ${idx + 1}/${total} · ${bpm.toFixed(2)} Atemz/min`;
+            document.getElementById('rez-phase-badge').textContent = subPhase === 'acclimation' ? 'Einschwingung' : 'Messung';
+            this._rezSetMetricLabels('RMSSD live', 'Ø Messung');
+            this._rezSetPatternDots(total, idx);
+            this._rezStartElapsedTicker();
+        };
+        test.onRmssdSample = (rmssd) => {
+            const el = document.getElementById('rez-live-metric');
+            if (el) el.textContent = rmssd > 0 ? rmssd + ' ms' : '—';
+        };
+        test.onFinalistDone = (idx, results) => {
+            const last = results[results.length - 1];
+            const el = document.getElementById('rez-avg-metric');
+            if (el) el.textContent = `${last.avgRmssd} ms`;
+        };
+
+        test.onComplete = (winner, result) => this._rezOnProtocol1Complete(winner, result);
+        test.onCancelled = () => { this._rezShowSection('rez-home'); this._rezLoadStepCards(); };
+
+        test.start();
     }
 
-    /** Zeigt Modal für manuellen Startwert, gibt Promise<prevOptimum|null> zurück */
-    _rezGetManualInput(n) {
+    _rezOnProtocol1Complete(winner, result) {
+        clearInterval(this._calibTicker);
+        this._calibStopPacer();
+        this._lastFrequencyResult = result;
+
+        if (this._calibFullChain) {
+            // Komplett-Test: Zwischenstopp mit "Weiter zu Protokoll 2"
+            this._rezShowSection('rez-step-done');
+            document.getElementById('rez-done-title').textContent = 'Protokoll 1 abgeschlossen';
+            document.getElementById('rez-done-sub').textContent =
+                `Optimum: ${winner.bpm.toFixed(2)} Atemz/min · ${winner.avgRmssd} ms RMSSD`;
+
+            const tbody = document.querySelector('#rez-step-table tbody');
+            if (tbody) {
+                const bestBpm = winner.bpm;
+                tbody.innerHTML = result.finalists.map(r => `
+                    <tr class="${r.bpm === bestBpm ? 'rez-best-row' : ''}">
+                        <td>${r.bpm.toFixed(2)} /min</td>
+                        <td class="${r.bpm === bestBpm ? 'rez-best-val' : ''}">${r.avgRmssd} ms</td>
+                        <td>${r.bpm === bestBpm ? '★' : ''}</td>
+                    </tr>
+                `).join('');
+            }
+
+            const nextBtn = document.getElementById('rez-next-btn');
+            const cancelBtn = document.getElementById('rez-cancel-btn');
+            if (nextBtn) {
+                nextBtn.textContent = 'Weiter zu Protokoll 2';
+                nextBtn.style.display = '';
+                nextBtn.onclick = () => this._rezStartProtocol2(winner.bpm, true);
+            }
+            if (cancelBtn) {
+                cancelBtn.style.display = '';
+                cancelBtn.textContent = 'Hier beenden';
+                cancelBtn.onclick = () => this._rezShowFinal(winner.rhythm, `${winner.avgRmssd} ms RMSSD`, null);
+            }
+        } else {
+            this._rezShowFinal(winner.rhythm, `${winner.avgRmssd} ms RMSSD`, null);
+        }
+    }
+
+    // ── Protokoll 2: Verhältnis & Pausen ────────────────────────────────────
+
+    async _rezStartProtocol2Entry() {
+        if (!this.ble.isConnected) { alert('Polar H10 muss verbunden sein.'); return; }
+        const [lastFreq] = await this.db.getFrequencyTests(1);
+        let baseBpm = lastFreq?.winner?.bpm;
+        if (!baseBpm) {
+            baseBpm = await this._rezGetManualBpm();
+            if (!baseBpm) return;
+        }
+        this._rezStartProtocol2(baseBpm, false);
+    }
+
+    /** Zeigt Modal für manuellen Frequenz-Startwert (falls Protokoll 1 noch nie lief) */
+    _rezGetManualBpm() {
         return new Promise(resolve => {
-            const overlay    = document.getElementById('rez-manual-overlay');
-            const titleEl    = document.getElementById('rez-manual-title');
-            const descEl     = document.getElementById('rez-manual-desc');
-            const bpmInput   = document.getElementById('rez-manual-bpm');
-            const ratioWrap  = document.getElementById('rez-manual-ratio-wrap');
-            const ratioInput = document.getElementById('rez-manual-ratio');
-            const okBtn      = document.getElementById('rez-manual-ok');
-            const cancelBtn  = document.getElementById('rez-manual-cancel');
+            const overlay   = document.getElementById('rez-manual-overlay');
+            const descEl    = document.getElementById('rez-manual-desc');
+            const bpmInput  = document.getElementById('rez-manual-bpm');
+            const okBtn     = document.getElementById('rez-manual-ok');
+            const cancelBtn = document.getElementById('rez-manual-cancel');
 
-            const stepNames = { 2: 'Fein-Scan', 3: 'Verhältnis-Scan', 4: 'Pausen-Scan' };
-            const prevNames = { 2: 'Grob-Scan (Schritt 1)', 3: 'Fein-Scan (Schritt 2)', 4: 'Verhältnis-Scan (Schritt 3)' };
-
-            titleEl.textContent = `Schritt ${n} · ${stepNames[n]}`;
-            descEl.textContent  = `Kein gespeichertes Ergebnis für ${prevNames[n]} gefunden. Gib den Startwert manuell ein:`;
-
+            descEl.textContent = 'Kein gespeichertes Protokoll-1-Ergebnis gefunden. Gib die Frequenz manuell ein:';
             bpmInput.value = '';
             bpmInput.style.borderColor = '';
-            ratioInput.value = '';
-            ratioInput.style.borderColor = '';
-            ratioWrap.style.display = n === 4 ? '' : 'none';
             overlay.style.display = 'flex';
             setTimeout(() => bpmInput.focus(), 50);
 
@@ -1960,260 +2051,109 @@ class App {
 
             okBtn.onclick = () => {
                 const bpm = parseFloat(bpmInput.value.trim().replace(',', '.'));
-                if (isNaN(bpm) || bpm < 3.5 || bpm > 9.0) {
+                if (isNaN(bpm) || bpm < 4.5 || bpm > 8.0) {
                     bpmInput.style.borderColor = '#ff4444';
                     bpmInput.focus();
                     return;
                 }
-                bpmInput.style.borderColor = '';
-
-                // BPM → halber Zyklus (gleiche Formel wie resonanz.js:bpmToHalfCycleMs)
-                const ms = Math.round(30000 / bpm / 100) * 100;
-
-                if (n === 2) {
-                    close({ bpm, breathRhythm: { inhale: ms, holdIn: 0, exhale: ms, holdOut: 0 } });
-                    return;
-                }
-                if (n === 3) {
-                    close({ breathRhythm: { inhale: ms, holdIn: 0, exhale: ms, holdOut: 0 } });
-                    return;
-                }
-                // n === 4: zusätzlich Verhältnis
-                const ratioPart = ratioInput.value.trim().split(':')[0].replace(',', '.');
-                const ratioIn   = parseFloat(ratioPart);
-                if (isNaN(ratioIn) || ratioIn < 20 || ratioIn > 80) {
-                    ratioInput.style.borderColor = '#ff4444';
-                    ratioInput.focus();
-                    return;
-                }
-                ratioInput.style.borderColor = '';
-                const cycle    = ms * 2;
-                const inhaleMs = Math.round(cycle * ratioIn / 10000) * 100;
-                const exhaleMs = cycle - inhaleMs;
-                close({ breathRhythm: { inhale: inhaleMs, holdIn: 0, exhale: exhaleMs, holdOut: 0 } });
+                close(bpm);
             };
-
             cancelBtn.onclick = () => close(null);
         });
     }
 
-    _rezStartFullTest() {
-        if (!this.ble.isConnected) {
-            alert('Polar H10 muss verbunden sein.');
-            return;
-        }
-        this.resonanzTest = new ResonanzTest(this.hrv, this.db);
-        this._rezSetupCallbacks();
+    _rezStartProtocol2(baseBpm, chained) {
+        this._calibFullChain = chained;
+
+        const test = new RhythmTest(this.hrv, this.db, baseBpm);
+        this._calibTest = test;
         this.audio.unlock();
         this._rezShowSection('rez-running');
-        this.resonanzTest.startFullTest();
-        this._rezStartTicker();
-    }
+        this._rezSetStepDots(2);
 
-    _rezOnPatternStart(step, idx, pattern, total, step4Phase) {
-        // Schritt-Dots aktualisieren
-        [1, 2, 3, 4].forEach(n => {
-            const dot  = document.getElementById(`rez-dot-${n}`);
-            const line = document.getElementById(`rez-line-${n}`);
-            if (dot) {
-                dot.className = 'rez-step-dot' + (n < step ? ' done' : n === step ? ' active' : '');
-                dot.textContent = n < step ? '✓' : n;
-            }
-            if (line) line.className = 'rez-step-line' + (n < step ? ' done' : '');
-        });
+        const stageTitles = { 'A': 'Stufe A · Verhältnis', 'B-grob': 'Stufe B · Pausen (Grob)', 'B-fein': 'Stufe B · Pausen (Fein)' };
 
-        // Schritt-Titel
-        const titles = {
-            1: 'Schritt 1 · Grob-Scan',
-            2: 'Schritt 2 · Fein-Scan',
-            3: 'Schritt 3 · Verhältnis-Scan',
-            4: step4Phase === 'B' ? 'Schritt 4 · Pausen-Scan (Fein)' : 'Schritt 4 · Pausen-Scan (Grob)',
+        test.onRhythmChange = (rhythm) => this._calibSetPacer('rez-pacer-container', 'rez-breath-label', rhythm, test, 'rez-breath-countdown');
+
+        test.onStageStart = (stage, idx, total, info) => {
+            document.getElementById('rez-step-title').textContent = `Protokoll 2 · ${stageTitles[stage] ?? stage}`;
+            document.getElementById('rez-pattern-name').textContent =
+                `Kandidat ${idx + 1}/${total} · ${this._rezStageLabel(stage.startsWith('B') ? 'B' : 'A', info)}`;
+            document.getElementById('rez-phase-badge').textContent = 'Messung';
+            this._rezSetMetricLabels('RMSSD live', 'Ø Messung');
+            this._rezSetPatternDots(total, idx);
+            this._rezStartElapsedTicker();
         };
-        const titleEl = document.getElementById('rez-step-title');
-        if (titleEl) titleEl.textContent = titles[step] ?? '';
+        test.onRmssdSample = (rmssd) => {
+            const el = document.getElementById('rez-live-metric');
+            if (el) el.textContent = rmssd > 0 ? rmssd + ' ms' : '—';
+        };
+        test.onStageResult = (stage, idx, results) => {
+            const last = results[results.length - 1];
+            const el = document.getElementById('rez-avg-metric');
+            if (el) el.textContent = last.avgRmssd != null ? `${last.avgRmssd} ms` : '(wiederverwendet)';
+        };
+        test.onStageDone = (stage) => {
+            if (stage === 'A') this._showToast('Stufe A fertig — Pausen-Grobscan startet…');
+            if (stage === 'B-grob') this._showToast('Grobscan fertig — Feinabstimmung startet…');
+        };
 
-        // Muster-Name
-        const nameEl = document.getElementById('rez-pattern-name');
-        if (nameEl) nameEl.textContent = pattern.label;
+        test.onComplete = (winner, result) => this._rezOnProtocol2Complete(winner, result);
+        test.onCancelled = () => { this._rezShowSection('rez-home'); this._rezLoadStepCards(); };
 
-        // Phase-Badge zurücksetzen
-        const badge = document.getElementById('rez-phase-badge');
-        if (badge) { badge.textContent = 'Akklimatisierung'; badge.dataset.phase = 'acclimation'; }
-
-        // Countdown zurücksetzen
-        const cntEl = document.getElementById('rez-phase-countdown');
-        if (cntEl) cntEl.textContent = '2:00';
-
-        // Fortschritts-Punkte
-        const dotsWrap = document.getElementById('rez-pattern-dots');
-        if (dotsWrap) {
-            dotsWrap.innerHTML = Array.from({ length: total }, (_, i) =>
-                `<div class="rez-pdot${i < idx ? ' done' : i === idx ? ' active' : ''}"></div>`
-            ).join('');
-        }
-
-        // RMSSD zurücksetzen
-        const avgEl = document.getElementById('rez-avg-rmssd');
-        if (avgEl) avgEl.textContent = '—';
-
-        // BreathPacer neu starten
-        const container = document.getElementById('rez-pacer-container');
-        const labelEl   = document.getElementById('rez-breath-label');
-        const countEl   = document.getElementById('rez-breath-countdown');
-        if (container) {
-            if (this.resonanzPacer) this.resonanzPacer.destroy();
-            this.resonanzPacer = new BreathPacer(
-                container, pattern.breathRhythm, labelEl, countEl, this.audio
-            );
-            this.resonanzPacer.start();
-        }
+        test.start();
     }
 
-    _rezUpdateRmssd(rmssd, avg) {
-        const liveEl = document.getElementById('rez-live-rmssd');
-        const avgEl  = document.getElementById('rez-avg-rmssd');
-        if (liveEl) liveEl.textContent = rmssd > 0 ? rmssd + ' ms' : '—';
-        if (avgEl)  avgEl.textContent  = avg !== null ? avg + ' ms' : '—';
+    _rezOnProtocol2Complete(winner, result) {
+        clearInterval(this._calibTicker);
+        this._calibStopPacer();
+
+        const tableRows = result.stageBFein.map(r => `
+            <tr class="${r === winner ? 'rez-best-row' : ''}">
+                <td>${this._rezStageLabel('B', r)}</td>
+                <td class="${r === winner ? 'rez-best-val' : ''}">${r.avgRmssd} ms</td>
+                <td>${r === winner ? '★' : ''}</td>
+            </tr>
+        `).join('');
+
+        this._rezShowFinal(
+            { inhale: winner.inhale, holdIn: winner.holdIn, exhale: winner.exhale, holdOut: winner.holdOut },
+            `${winner.avgRmssd} ms RMSSD`,
+            { title: 'Stufe B · Pausen (Fein) — alle Muster', rows: tableRows }
+        );
     }
 
-    _rezStartTicker() {
-        clearInterval(this._rezTicker);
-        this._rezTicker = setInterval(() => {
-            if (!this.resonanzTest?.active) { clearInterval(this._rezTicker); return; }
+    // ── Gemeinsame Ergebnis-/Übersichts-Anzeige ─────────────────────────────
 
-            // Countdown
-            const rem  = this.resonanzTest.getPhaseRemaining();
-            const m    = Math.floor(rem / 60);
-            const s    = rem % 60;
-            const cntEl = document.getElementById('rez-phase-countdown');
-            if (cntEl) cntEl.textContent = `${m}:${String(s).padStart(2, '0')}`;
-
-            // Live-RMSSD (jede Sekunde aktualisieren)
-            const rmssd = this.resonanzTest.getCurrentRmssd();
-            const avg   = this.resonanzTest.getAvgRmssd();
-            this._rezUpdateRmssd(rmssd, avg);
-        }, 1000);
-    }
-
-    _rezOnStepDone(step, results, optimumIdx) {
-        clearInterval(this._rezTicker);
-        if (this.resonanzPacer) this.resonanzPacer.stop();
-
-        // Schritt 4: kombinierte 4A+4B-Ergebnisse direkt zur finalen Ansicht
-        if (step === 4) {
-            const allResults = this.resonanzTest.getResults(4);
-            const bestIdx    = allResults.reduce((bi, r, i) => r.avgRmssd > allResults[bi].avgRmssd ? i : bi, 0);
-            this._rezOnComplete(allResults[bestIdx]);
-            return;
-        }
-
-        this._rezShowSection('rez-step-done');
-
-        const stepNames = { 1: 'Grob-Scan', 2: 'Fein-Scan', 3: 'Verhältnis-Scan' };
-        const titleEl   = document.getElementById('rez-done-title');
-        const subEl     = document.getElementById('rez-done-sub');
-        const tbody     = document.querySelector('#rez-step-table tbody');
-
-        if (titleEl) titleEl.textContent = `Schritt ${step} abgeschlossen · ${stepNames[step] ?? ''}`;
-
-        const optimum = results[optimumIdx];
-        if (subEl && optimum) {
-            subEl.textContent = `Bestes Muster: ${optimum.shortLabel ?? optimum.label}  ·  ${optimum.avgRmssd} ms RMSSD`;
-        }
-
-        if (tbody) {
-            tbody.innerHTML = results.map((r, i) => `
-                <tr class="${i === optimumIdx ? 'rez-best-row' : ''}">
-                    <td>${r.shortLabel ?? r.label}</td>
-                    <td class="${i === optimumIdx ? 'rez-best-val' : ''}">${r.avgRmssd} ms</td>
-                    <td>${i === optimumIdx ? '★' : ''}</td>
-                </tr>
-            `).join('');
-        }
-
-        const nextBtn   = document.getElementById('rez-next-btn');
-        const cancelBtn = document.getElementById('rez-cancel-btn');
-
-        if (this.resonanzTest.stepOnly) {
-            // Einzelner Schritt: zurück zur Übersicht
-            if (nextBtn) {
-                nextBtn.textContent = 'Zur Übersicht';
-                nextBtn.style.display = '';
-                nextBtn.onclick = () => {
-                    this.resonanzTest = null;
-                    this._rezShowSection('rez-home');
-                    this._rezLoadStepCards();
-                    this._rezLoadLastResult();
-                };
-            }
-            if (cancelBtn) cancelBtn.style.display = 'none';
-        } else {
-            // Komplett-Test: weiter zum nächsten Schritt
-            const nextNames = {
-                1: 'Schritt 2: Fein-Scan starten',
-                2: 'Schritt 3: Verhältnis-Scan starten',
-                3: 'Schritt 4: Pausen-Scan starten',
-            };
-            if (nextBtn) {
-                nextBtn.textContent = nextNames[step] ?? 'Weiter';
-                nextBtn.style.display = '';
-                nextBtn.onclick = () => {
-                    this._rezShowSection('rez-running');
-                    this.resonanzTest.resumeNextStep();
-                    this._rezStartTicker();
-                };
-            }
-            if (cancelBtn) {
-                cancelBtn.style.display = '';
-                cancelBtn.onclick = () => {
-                    this.resonanzTest?.stop();
-                    this.resonanzTest = null;
-                    this._rezShowSection('rez-home');
-                    this._rezLoadStepCards();
-                    this._rezLoadLastResult();
-                };
-            }
-        }
-    }
-
-    _rezOnComplete(finalOptimum) {
-        clearInterval(this._rezTicker);
-        if (this.resonanzPacer) this.resonanzPacer.stop();
-
+    _rezShowFinal(rhythm, metricLabel, table) {
         this._rezShowSection('rez-final');
 
-        const r   = finalOptimum.breathRhythm;
         const s   = ms => (ms / 1000).toFixed(1) + ' s';
         const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
 
-        set('rez-final-rmssd-val', finalOptimum.avgRmssd);
-        set('rez-fin-inhale',  s(r.inhale));
-        set('rez-fin-exhale',  s(r.exhale));
-        set('rez-fin-holdin',  r.holdIn  ? s(r.holdIn)  : '0,0 s');
-        set('rez-fin-holdout', r.holdOut ? s(r.holdOut) : '0,0 s');
+        set('rez-final-rmssd-val', metricLabel.split(' ')[0]);
+        set('rez-final-unit', metricLabel.split(' ').slice(1).join(' '));
+        set('rez-fin-inhale',  s(rhythm.inhale));
+        set('rez-fin-exhale',  s(rhythm.exhale));
+        set('rez-fin-holdin',  rhythm.holdIn  ? s(rhythm.holdIn)  : '0,0 s');
+        set('rez-fin-holdout', rhythm.holdOut ? s(rhythm.holdOut) : '0,0 s');
 
-        // Tabelle Schritt 4 (Pausen-Muster, 4A+4B kombiniert)
+        const wrap  = document.getElementById('rez-final-table-wrap');
+        const title = document.getElementById('rez-final-table-title');
         const tbody = document.querySelector('#rez-final-table tbody');
-        const tableTitle = document.querySelector('#rez-final-table-wrap .section-title');
-        if (tableTitle) tableTitle.textContent = 'Schritt 4 · Pausen-Scan (alle Muster)';
-        if (tbody && this.resonanzTest) {
-            const step4 = this.resonanzTest.getResults(4);
-            const bestRmssd = step4.length ? Math.max(...step4.map(r => r.avgRmssd)) : 0;
-            tbody.innerHTML = step4.map(r => `
-                <tr class="${r.avgRmssd === bestRmssd ? 'rez-best-row' : ''}">
-                    <td>${r.shortLabel ?? r.label}</td>
-                    <td class="${r.avgRmssd === bestRmssd ? 'rez-best-val' : ''}">${r.avgRmssd} ms</td>
-                    <td>${r.avgRmssd === bestRmssd ? '★' : ''}</td>
-                </tr>
-            `).join('');
+        if (table && tbody) {
+            wrap.style.display = '';
+            if (title) title.textContent = table.title;
+            tbody.innerHTML = table.rows;
+        } else if (wrap) {
+            wrap.style.display = 'none';
         }
 
-        // Übernehmen-Button
         const applyBtn = document.getElementById('rez-apply-btn');
         if (applyBtn) {
             applyBtn.onclick = async () => {
-                this.session.breathRhythm = r;
-                await this.db.setSetting('breathRhythm', r);
+                this.session.breathRhythm = rhythm;
+                await this.db.setSetting('breathRhythm', rhythm);
                 this._updateBreathPreview();
                 this._showToast('Atemrhythmus übernommen!');
                 this._navigateTo('training');
@@ -2223,7 +2163,7 @@ class App {
         const backBtn = document.getElementById('rez-final-back-btn');
         if (backBtn) {
             backBtn.onclick = async () => {
-                this.resonanzTest = null;
+                this._calibTest = null;
                 this._rezShowSection('rez-home');
                 await this._rezLoadStepCards();
                 await this._rezLoadLastResult();
@@ -2243,36 +2183,44 @@ class App {
         const content   = document.getElementById('rez-last-content');
         if (!container || !content) return;
 
-        const results = await this.db.getResonanzResults(1);
-        if (!results.length) { container.style.display = 'none'; return; }
+        const [lastRhythm] = await this.db.getRhythmTests(1);
+        const [lastFreq]   = await this.db.getFrequencyTests(1);
+        const latest = [lastRhythm, lastFreq].filter(Boolean).sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+        if (!latest) { container.style.display = 'none'; return; }
 
-        const r    = results[0];
-        const date = new Date(r.date).toLocaleDateString('de-DE', { day: '2-digit', month: 'short', year: 'numeric' });
-        const rh   = r.finalRhythm;
-        const s    = ms => (ms / 1000).toFixed(1) + ' s';
-        const rhythmStr = [s(rh.inhale), rh.holdIn ? s(rh.holdIn) : null, s(rh.exhale), rh.holdOut ? s(rh.holdOut) : null]
-            .filter(Boolean).join(' / ');
+        const date = new Date(latest.date).toLocaleDateString('de-DE', { day: '2-digit', month: 'short', year: 'numeric' });
+        const w    = latest.winner;
+        const rh   = w.inhale !== undefined
+            ? { inhale: w.inhale, holdIn: w.holdIn, exhale: w.exhale, holdOut: w.holdOut }
+            : w.rhythm;
 
         content.innerHTML = `
             <span style="color:var(--text-secondary)">${date}</span>
-            <span>${rhythmStr}</span>
-            <span style="color:var(--accent-teal);font-weight:700">${r.finalRmssd} ms</span>
+            <span>${rhythmToString(rh)}</span>
+            <span style="color:var(--accent-teal);font-weight:700">${w.avgRmssd} ms</span>
         `;
         container.style.display = '';
     }
 
     async _rezLoadStepCards() {
-        for (let n = 1; n <= 4; n++) {
-            const optimum  = await this.db.getSetting(`resonanzStep${n}Optimum`);
+        const [lastFreq]   = await this.db.getFrequencyTests(1);
+        const [lastRhythm] = await this.db.getRhythmTests(1);
+        const data = { 1: lastFreq, 2: lastRhythm };
+
+        for (let n = 1; n <= 2; n++) {
+            const entry    = data[n];
             const card     = document.getElementById(`rez-card-${n}`);
             const resultEl = document.getElementById(`rez-result-${n}`);
             const valEl    = document.getElementById(`rez-result-val-${n}`);
             const badge    = document.getElementById(`rez-badge-${n}`);
 
-            if (optimum) {
+            if (entry) {
+                const w = entry.winner;
                 if (resultEl) resultEl.style.display = '';
                 if (valEl) {
-                    valEl.textContent = `${optimum.label ?? ResonanzTest.rhythmToString(optimum.breathRhythm)}  ·  ${optimum.avgRmssd} ms`;
+                    valEl.textContent = n === 1
+                        ? `${w.bpm.toFixed(2)} Atemz/min  ·  ${w.avgRmssd} ms`
+                        : `${rhythmToString({ inhale: w.inhale, holdIn: w.holdIn, exhale: w.exhale, holdOut: w.holdOut })}  ·  ${w.avgRmssd} ms`;
                 }
                 if (card)  card.classList.add('done');
                 if (badge) badge.textContent = '✓';
@@ -2281,12 +2229,6 @@ class App {
                 if (card)  card.classList.remove('done');
                 if (badge) badge.textContent = String(n);
             }
-        }
-
-        // Schritte 2–4 sind immer klickbar (manueller Startwert möglich)
-        for (let n = 2; n <= 4; n++) {
-            const card = document.getElementById(`rez-card-${n}`);
-            if (card) card.classList.remove('disabled');
         }
     }
 

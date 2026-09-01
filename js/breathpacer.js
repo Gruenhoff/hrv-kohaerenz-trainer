@@ -18,7 +18,7 @@ export class BreathPacer {
         this.audio       = audio       || null;
 
         this.isRunning   = false;
-        this.phase       = 'inhale';
+        this.phase       = null;   // null bis zum ersten _tick(), damit onPhaseChange auch für den allerersten Einatem-Start feuert
         this.startTime   = null;
         this.animFrame   = null;
 

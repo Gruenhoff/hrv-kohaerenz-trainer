@@ -4,7 +4,7 @@
  */
 
 const DB_NAME = 'hrv-trainer';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 const STORES = {
     SESSIONS:  'sessions',
@@ -53,13 +53,37 @@ export class Database {
                     db.createObjectStore(STORES.BASELINE, { keyPath: 'key' });
                 }
 
-                // Resonanztest-Ergebnisse
-                if (!db.objectStoreNames.contains('resonanzresults')) {
-                    const rz = db.createObjectStore('resonanzresults', {
+                // Altes Resonanztest-Format (4-Schritt-RMSSD-Protokoll) entfernen —
+                // ersetzt durch frequencyTests/rhythmTests/dailyChecks (inkompatibles Format)
+                if (db.objectStoreNames.contains('resonanzresults')) {
+                    db.deleteObjectStore('resonanzresults');
+                }
+
+                // Protokoll 1: Frequenz-Scan-Ergebnisse
+                if (!db.objectStoreNames.contains('frequencyTests')) {
+                    const ft = db.createObjectStore('frequencyTests', {
                         keyPath: 'id',
                         autoIncrement: true,
                     });
-                    rz.createIndex('date', 'date', { unique: false });
+                    ft.createIndex('date', 'date', { unique: false });
+                }
+
+                // Protokoll 2: Verhältnis-/Pausen-Scan-Ergebnisse
+                if (!db.objectStoreNames.contains('rhythmTests')) {
+                    const rt = db.createObjectStore('rhythmTests', {
+                        keyPath: 'id',
+                        autoIncrement: true,
+                    });
+                    rt.createIndex('date', 'date', { unique: false });
+                }
+
+                // Protokoll 3: tägliche 5-Minuten-Checks
+                if (!db.objectStoreNames.contains('dailyChecks')) {
+                    const dc = db.createObjectStore('dailyChecks', {
+                        keyPath: 'id',
+                        autoIncrement: true,
+                    });
+                    dc.createIndex('date', 'date', { unique: false });
                 }
 
                 // Zone-2-Ergebnisse (Feld- und Stufentest)
@@ -175,30 +199,38 @@ export class Database {
         return this._get(STORES.BASELINE, 'baseline');
     }
 
-    // ─── Resonanztest-Ergebnisse ─────────────────────────────────────────────
+    // ─── Kalibrierungs-Ergebnisse (Protokoll 1/2/3) ──────────────────────────
 
-    async saveResonanzResult(result) {
-        return this._add('resonanzresults', result);
+    async saveFrequencyTest(result) {
+        return this._add('frequencyTests', { date: new Date().toISOString(), ...result });
     }
 
-    async getResonanzResults(limit = 10) {
-        return new Promise((resolve, reject) => {
-            const tx      = this.db.transaction('resonanzresults', 'readonly');
-            const store   = tx.objectStore('resonanzresults');
-            const index   = store.index('date');
-            const results = [];
-            const request = index.openCursor(null, 'prev');
-            request.onsuccess = (e) => {
-                const cursor = e.target.result;
-                if (cursor && results.length < limit) {
-                    results.push(cursor.value);
-                    cursor.continue();
-                } else {
-                    resolve(results);
-                }
-            };
-            request.onerror = (e) => reject(e.target.error);
-        });
+    async getFrequencyTests(limit = 10) {
+        return this._getRecent('frequencyTests', limit);
+    }
+
+    async saveRhythmTest(result) {
+        return this._add('rhythmTests', { date: new Date().toISOString(), ...result });
+    }
+
+    async getRhythmTests(limit = 10) {
+        return this._getRecent('rhythmTests', limit);
+    }
+
+    async saveDailyCheck(result) {
+        return this._add('dailyChecks', { date: new Date().toISOString(), ...result });
+    }
+
+    async getDailyChecks(limit = 10) {
+        return this._getRecent('dailyChecks', limit);
+    }
+
+    /** Letzter Daily-Check, falls von heute (lokales Datum) – sonst null */
+    async getTodaysDailyCheck() {
+        const [latest] = await this.getDailyChecks(1);
+        if (!latest) return null;
+        const today = new Date().toDateString();
+        return new Date(latest.date).toDateString() === today ? latest : null;
     }
 
     // ─── Zone-2-Ergebnisse ───────────────────────────────────────────────────
@@ -253,6 +285,26 @@ export class Database {
     }
 
     // ─── Hilfsmethoden ───────────────────────────────────────────────────────
+
+    _getRecent(storeName, limit) {
+        return new Promise((resolve, reject) => {
+            const tx      = this.db.transaction(storeName, 'readonly');
+            const store   = tx.objectStore(storeName);
+            const index   = store.index('date');
+            const results = [];
+            const request = index.openCursor(null, 'prev');
+            request.onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (cursor && results.length < limit) {
+                    results.push(cursor.value);
+                    cursor.continue();
+                } else {
+                    resolve(results);
+                }
+            };
+            request.onerror = (e) => reject(e.target.error);
+        });
+    }
 
     _add(storeName, data) {
         return new Promise((resolve, reject) => {

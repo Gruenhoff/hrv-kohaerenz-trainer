@@ -24,6 +24,7 @@ export class HRVAnalyzer {
     constructor() {
         this.rrBuffer = [];          // Gefilterte RR-Intervalle (ms)
         this.rrTimestamps = [];      // Kumulierte Zeitstempel (ms)
+        this.rrWallTimestamps = [];  // performance.now() je RR-Intervall (für Zyklus-Ausrichtung)
         this.lastRR = null;
         this.windowSizeSeconds = 120; // 2-Minuten gleitendes Fenster
         this.lastFFTResult = null;
@@ -53,6 +54,7 @@ export class HRVAnalyzer {
 
         this.rrBuffer.push(rr);
         this.rrTimestamps.push(timestamp);
+        this.rrWallTimestamps.push(performance.now());
 
         // Fenster begrenzen
         const windowMs = this.windowSizeSeconds * 1000;
@@ -60,6 +62,7 @@ export class HRVAnalyzer {
         while (this.rrTimestamps.length > 0 && this.rrTimestamps[0] < cutoff) {
             this.rrBuffer.shift();
             this.rrTimestamps.shift();
+            this.rrWallTimestamps.shift();
         }
 
         return true;
@@ -113,6 +116,54 @@ export class HRVAnalyzer {
         }
         if (hrs.length < 2) return 0;
         return Math.max(...hrs) - Math.min(...hrs);
+    }
+
+    /**
+     * Höchste Herzfrequenz (bpm) im gegebenen performance.now()-Zeitfenster, oder null ohne Daten.
+     */
+    maxHRInWindow(startMs, endMs) {
+        let max = null;
+        for (let i = 0; i < this.rrWallTimestamps.length; i++) {
+            const t = this.rrWallTimestamps[i];
+            if (t < startMs || t > endMs) continue;
+            const rr = this.rrBuffer[i];
+            if (rr <= 0) continue;
+            const hr = 60000 / rr;
+            if (max === null || hr > max) max = hr;
+        }
+        return max;
+    }
+
+    /**
+     * Niedrigste Herzfrequenz (bpm) im gegebenen performance.now()-Zeitfenster, oder null ohne Daten.
+     */
+    minHRInWindow(startMs, endMs) {
+        let min = null;
+        for (let i = 0; i < this.rrWallTimestamps.length; i++) {
+            const t = this.rrWallTimestamps[i];
+            if (t < startMs || t > endMs) continue;
+            const rr = this.rrBuffer[i];
+            if (rr <= 0) continue;
+            const hr = 60000 / rr;
+            if (min === null || hr < min) min = hr;
+        }
+        return min;
+    }
+
+    /**
+     * Zyklus-ausgerichtete RSA-Amplitude: HRmax während der Einatemphase minus
+     * HRmin während der Ausatemphase (Moonbird-Metrik), statt eines beliebigen
+     * rollierenden Zeitfensters. Grenzen kommen von BreathPacer.onPhaseChange.
+     * @param {number} inhaleStart - performance.now() bei Beginn Einatmen
+     * @param {number} inhaleEnd   - performance.now() bei Ende Einatmen (= Beginn Ausatmen)
+     * @param {number} exhaleEnd   - performance.now() bei Ende Ausatmen
+     * @returns {number|null} Amplitude in bpm, oder null wenn Daten fehlen
+     */
+    cycleAmplitude(inhaleStart, inhaleEnd, exhaleEnd) {
+        const hrMax = this.maxHRInWindow(inhaleStart, inhaleEnd);
+        const hrMin = this.minHRInWindow(inhaleEnd, exhaleEnd);
+        if (hrMax === null || hrMin === null) return null;
+        return hrMax - hrMin;
     }
 
     /**
@@ -312,6 +363,7 @@ export class HRVAnalyzer {
     reset() {
         this.rrBuffer = [];
         this.rrTimestamps = [];
+        this.rrWallTimestamps = [];
         this.lastRR = null;
         this.lastFFTResult = null;
         this.coherenceHistory = [];

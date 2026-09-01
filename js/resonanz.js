@@ -1,383 +1,517 @@
 /**
- * ResonanzTest – Optimaler Atemrhythmus in 4 Schritten
+ * Kalibrierung des optimalen Atemrhythmus – 3 Protokolle
  *
- *  1  Grob-Scan     : 6,5 / 6,0 / 5,5 / 5,0 / 4,5 Atemz/min    – 5 × 4 Min = 20 Min
- *  2  Fein-Scan     : Optimum ± 0,2 in 0,1er-Schritten            – 5 × 4 Min = 20 Min
- *  3  Verhältnis    : Ein:Aus 35:65 / 40:60 / 45:55 / 50:50 / 55:45 – 5 × 4 Min = 20 Min
- *  4  Pausen        : Grob (0/1/2 s) + Fein (± 0,1 s) automatisch  – 11 × 4 Min = 44 Min
+ *  1  FrequencyTest – Frequenz-Scan (ersetzt alten Grob-/Fein-Scan)
+ *     Phase 1 (Grobsieb): 15 Kandidaten 4,5–8,0 Atemz/min (0,25-Schritte),
+ *       je 6 Atemzyklen zyklus-ausgerichtete HRmax−HRmin-Messung (2 verworfen
+ *       zur Einschwingung, getrimmter Mittelwert der mittleren 2 von 4).
+ *       Parabel-Glättung über alle 15 Rohwerte, Top 5 nach geglättetem Wert.
+ *     Phase 2 (Feinvalidierung): 5 Finalisten × (1 Min Einschwingung + 2 Min
+ *       RMSSD-Messung). Entscheidung: RMSSD primär, Kohärenz-Score als
+ *       Tiebreaker bei < 5 % RMSSD-Differenz.
+ *     ⏱ ca. 31 Minuten.
  *
- *  Jedes Muster: 2 Min Akklimatisierung + 2 Min Messung · Metrik: Ø RMSSD alle 10 s.
- *  Rhythmen auf 100 ms gerundet → x,x Sekunden Anzeige.
- *  Schritte können einzeln oder als Komplett-Test (alle 4) gestartet werden.
- *  Jedes Schritt-Ergebnis wird in der DB als Setting gespeichert.
+ *  2  RhythmTest – Verhältnis & Pausen bei der Protokoll-1-Optimalfrequenz
+ *     Zyklusdauer bleibt fix (Pausen werden kompensiert, kein Frequenz-Drift).
+ *     Stufe A: Ein:Aus-Verhältnis (5 Kandidaten, 35:65…55:45).
+ *     Stufe B: Pausen – Grobscan (6 Muster: kein Halt/Halt-Ein/Halt-Aus/beide)
+ *       → Feinabstimmung 3×3-Gitter (Halt-Ein × Halt-Aus unabhängig, ±0,3s).
+ *     Je Kandidat 8 Atemzyklen (2 verworfen, getrimmter Mittelwert der
+ *     RMSSD-Stichproben), Kohärenz-Score als zweite Stimme.
+ *     ⏱ ca. 27 Minuten.
+ *
+ *  3  DailyCheck – 5-Minuten-Check vor der Trainingssession
+ *     5 Kandidaten: gespeicherte Frequenz ±1,0 Atemz/min (0,5-Schritte),
+ *     gleiches 6-Zyklen-Fenster wie Protokoll 1, keine Glättung.
+ *     Ergebnis wird gedämpft übernommen (0,8·alt + 0,2·neu). Nur die Frequenz
+ *     wird angepasst – Verhältnis/Pausen aus Protokoll 2 bleiben strukturell
+ *     erhalten (proportionale Skalierung des gespeicherten Rhythmus).
+ *     ⏱ ca. 5 Minuten, einmal pro Tag (manuelle Override-Option).
  */
 
-const ACCLIMATION_SEC = 120;
-const MEASUREMENT_SEC = 120;
-const SAMPLE_SEC      = 10;
+// ─── Konstanten ──────────────────────────────────────────────────────────────
 
-/** BPM → halber Zyklus in ms, gerundet auf 100 ms */
-function bpmToHalfCycleMs(bpm) {
-    return Math.round(30000 / bpm / 100) * 100;
+const GRID_START = 4.5, GRID_END = 8.0, GRID_STEP = 0.25;
+const PHASE1_CYCLES = 6, PHASE1_DISCARD = 2;
+const TOP_N = 5;
+const PHASE2_ACCLIM_SEC = 60, PHASE2_MEASURE_SEC = 120;
+const STAGE_CYCLES = 8, STAGE_DISCARD = 2;
+const DAILY_OFFSETS = [-1.0, -0.5, 0, 0.5, 1.0];
+const RMSSD_SAMPLE_MS = 10000;
+const TIEBREAK_MARGIN = 0.95; // RMSSD ≥ 95% des Maximums gilt als "knapp"
+
+// ─── Hilfsfunktionen ─────────────────────────────────────────────────────────
+
+export class CancelledError extends Error {}
+
+function bpmToCycleMs(bpm) {
+    return Math.round(60000 / bpm);
 }
 
-export class ResonanzTest {
+function buildFrequencyGrid() {
+    const n = Math.round((GRID_END - GRID_START) / GRID_STEP);
+    return Array.from({ length: n + 1 }, (_, i) => Math.round((GRID_START + i * GRID_STEP) * 100) / 100);
+}
+
+function symmetricRhythm(bpm) {
+    const cycleMs = bpmToCycleMs(bpm);
+    const half = Math.round(cycleMs / 2);
+    return { inhale: half, holdIn: 0, exhale: cycleMs - half, holdOut: 0 };
+}
+
+/** Getrimmter Mittelwert: höchsten und niedrigsten Wert verwerfen, Rest mitteln. */
+function trimmedMean(values) {
+    if (!values.length) return 0;
+    if (values.length <= 2) return values.reduce((a, b) => a + b, 0) / values.length;
+    const sorted = [...values].sort((a, b) => a - b);
+    const trimmed = sorted.slice(1, -1);
+    return trimmed.reduce((a, b) => a + b, 0) / trimmed.length;
+}
+
+/** Kleinste-Quadrate-Parabel y = a·x² + b·x + c durch die Punkte (xs, ys). */
+function quadraticFit(xs, ys) {
+    const n = xs.length;
+    let sx = 0, sx2 = 0, sx3 = 0, sx4 = 0, sy = 0, sxy = 0, sx2y = 0;
+    for (let i = 0; i < n; i++) {
+        const x = xs[i], y = ys[i], x2 = x * x;
+        sx += x; sx2 += x2; sx3 += x2 * x; sx4 += x2 * x2;
+        sy += y; sxy += x * y; sx2y += x2 * y;
+    }
+    const A = [[n, sx, sx2], [sx, sx2, sx3], [sx2, sx3, sx4]];
+    const B = [sy, sxy, sx2y];
+    const det = m =>
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+        m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+        m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    const D = det(A);
+    if (Math.abs(D) < 1e-9) return { a: 0, b: 0, c: n ? sy / n : 0 };
+    const withCol = (col, vec) => A.map((row, i) => row.map((v, j) => j === col ? vec[i] : v));
+    return { c: det(withCol(0, B)) / D, b: det(withCol(1, B)) / D, a: det(withCol(2, B)) / D };
+}
+
+/** Sieger nach RMSSD (primär), Kohärenz-Score als Tiebreaker bei < 5% Differenz. */
+function pickWinner(results) {
+    const maxRmssd = Math.max(...results.map(r => r.avgRmssd));
+    const close = results.filter(r => r.avgRmssd >= maxRmssd * TIEBREAK_MARGIN);
+    if (close.length > 1) {
+        return close.reduce((best, r) => r.coherenceScore > best.coherenceScore ? r : best);
+    }
+    return results.find(r => r.avgRmssd === maxRmssd);
+}
+
+/** Pausen-Muster kompensiert bauen: Gesamtzyklus bleibt fix, Ein:Aus-Anteil bleibt erhalten. */
+function buildPausePattern(baseInhale, baseExhale, cycleMs, holdIn, holdOut) {
+    const ratio = baseInhale / (baseInhale + baseExhale);
+    const available = Math.max(1000, cycleMs - holdIn - holdOut);
+    const inhale = Math.round(available * ratio / 100) * 100;
+    const exhale = available - inhale;
+    return { inhale, holdIn, exhale, holdOut };
+}
+
+export function rhythmToString(r) {
+    if (!r) return '—';
+    const s = ms => (ms / 1000).toFixed(1) + ' s';
+    const parts = [s(r.inhale)];
+    if (r.holdIn) parts.push(`H-In ${s(r.holdIn)}`);
+    parts.push(s(r.exhale));
+    if (r.holdOut) parts.push(`H-Out ${s(r.holdOut)}`);
+    return parts.join(' / ');
+}
+
+// ─── Basisklasse: Phasenwechsel-Warteschlange + Mess-Engines ────────────────
+
+class CalibrationTestBase {
     /**
      * @param {import('./hrv.js').HRVAnalyzer} hrv
      * @param {import('./database.js').Database} db
      */
     constructor(hrv, db) {
         this.hrv = hrv;
-        this.db  = db;
-        this._reset();
+        this.db = db;
+        this._active = false;
+        this._phaseWaiters = [];
+        this._waitTimer = null;
 
-        // ── Callbacks (von app.js gesetzt) ──────────────────────────────────
-        /** @type {function(step, idx, pattern, total, step4Phase)} */
-        this.onPatternStart  = null;
-        /** @type {function('acclimation'|'measurement')} */
-        this.onPhaseChange   = null;
-        /** @type {function(rmssd, avg)} */
-        this.onRmssdSample   = null;
-        /** Feuert zwischen Schritt-4A und 4B (automatischer Übergang, kein Stop) */
-        /** @type {function(step4AResults, optimumIdx)} */
-        this.onStep4Progress = null;
-        /** @type {function(step, results, optimumIdx)} */
-        this.onStepDone      = null;
-        /** @type {function(finalOptimum, fullResult)} */
-        this.onComplete      = null;
+        // Callbacks (von app.js gesetzt)
+        this.onRhythmChange = null;   // (rhythm) => void – app.js startet neuen BreathPacer
+        this.onCancelled    = null;   // () => void
     }
 
-    _reset() {
-        this._active     = false;
-        this._step       = 0;
-        this._stepOnly   = false;  // true = nur aktuellen Schritt ausführen
-        this._patternIdx = 0;
-        this._phase      = 'acclimation';
-        this._startTime  = null;
-        this._phaseTimer = null;
-        this._samTimer   = null;
-
-        this._patterns       = [];
-        this._measureSamples = [];
-        this._results        = { 1: [], 2: [], 3: [], '4A': [], '4B': [] };
-        this._step4Phase     = null;   // 'A' | 'B'
-        this._step4AOptimum  = null;
-    }
-
-    // ─── Getter ──────────────────────────────────────────────────────────────
-
-    get active()         { return this._active; }
-    get step()           { return this._step; }
-    get stepOnly()       { return this._stepOnly; }
-    get patternIdx()     { return this._patternIdx; }
-    get phase()          { return this._phase; }
-    get patterns()       { return this._patterns; }
-    get currentPattern() { return this._patterns[this._patternIdx] ?? null; }
-    get step4Phase()     { return this._step4Phase; }
-
-    /** Alle Ergebnisse für einen Schritt (Schritt 4 = 4A+4B kombiniert) */
-    getResults(step) {
-        if (step === 4) return [...(this._results['4A'] ?? []), ...(this._results['4B'] ?? [])];
-        return this._results[step] ?? [];
-    }
-
-    getPatternElapsed() {
-        return this._startTime ? Math.round((Date.now() - this._startTime) / 1000) : 0;
-    }
-
-    getPhaseRemaining() {
-        const el = this.getPatternElapsed();
-        if (this._phase === 'acclimation') return Math.max(0, ACCLIMATION_SEC - el);
-        return Math.max(0, MEASUREMENT_SEC - (el - ACCLIMATION_SEC));
-    }
-
-    getCurrentRmssd() { return Math.round(this.hrv.rmssd()); }
-
-    getAvgRmssd() {
-        if (!this._measureSamples.length) return null;
-        return Math.round(this._measureSamples.reduce((a, b) => a + b, 0) / this._measureSamples.length);
-    }
-
-    // ─── Starten ─────────────────────────────────────────────────────────────
-
-    /** Einzelnen Schritt starten (Ergebnis des Vorgänger-Schritts als Eingabe) */
-    startStep(stepNum, prevOptimum = null) {
-        this._reset();
-        this._step     = stepNum;
-        this._stepOnly = true;
-        this._active   = true;
-
-        switch (stepNum) {
-            case 1:
-                this._patterns = this._buildStep1Patterns();
-                break;
-            case 2:
-                if (!prevOptimum?.bpm) throw new Error('Schritt 2 braucht Schritt-1-Ergebnis (bpm)');
-                this._patterns = this._buildStep2Patterns(prevOptimum.bpm);
-                break;
-            case 3:
-                if (!prevOptimum?.breathRhythm) throw new Error('Schritt 3 braucht Schritt-2-Ergebnis');
-                this._patterns = this._buildStep3Patterns(prevOptimum.breathRhythm);
-                break;
-            case 4:
-                if (!prevOptimum?.breathRhythm) throw new Error('Schritt 4 braucht Schritt-3-Ergebnis');
-                this._step4Phase = 'A';
-                this._patterns = this._buildStep4APatterns(prevOptimum.breathRhythm);
-                break;
-            default:
-                throw new Error(`Unbekannter Schritt: ${stepNum}`);
-        }
-
-        this._runCurrentPattern();
-    }
-
-    /** Alle 4 Schritte hintereinander starten */
-    startFullTest() {
-        this._reset();
-        this._step     = 1;
-        this._stepOnly = false;
-        this._active   = true;
-        this._patterns = this._buildStep1Patterns();
-        this._runCurrentPattern();
-    }
+    get active() { return this._active; }
 
     stop() {
         this._active = false;
-        clearTimeout(this._phaseTimer);
-        clearInterval(this._samTimer);
-        this._phaseTimer = null;
-        this._samTimer   = null;
+        clearTimeout(this._waitTimer);
+        if (this._waitReject) {
+            const reject = this._waitReject;
+            this._waitReject = null;
+            reject(new CancelledError());
+        }
+        const waiters = this._phaseWaiters;
+        this._phaseWaiters = [];
+        waiters.forEach(w => w.reject(new CancelledError()));
     }
 
-    /** Nächsten Schritt starten (nach Nutzer-Bestätigung zwischen Schritten) */
-    resumeNextStep() {
-        if (this._active) return;
-        this._active = true;
-        this._runCurrentPattern();
+    /** Von app.js bei jedem BreathPacer.onPhaseChange aufzurufen. */
+    notifyPhaseChange(phase) {
+        if (!this._phaseWaiters.length) return;
+        const evt = { phase, ts: performance.now() };
+        const waiters = this._phaseWaiters;
+        this._phaseWaiters = [];
+        waiters.forEach(w => w.resolve(evt));
     }
 
-    // ─── Muster-Definitionen ─────────────────────────────────────────────────
-
-    _buildStep1Patterns() {
-        return [6.5, 6.0, 5.5, 5.0, 4.5].map(bpm => {
-            const ms = bpmToHalfCycleMs(bpm);
-            return {
-                label:        `${bpm.toFixed(1)} Atemz/min  ·  ${(ms/1000).toFixed(1)} s / ${(ms/1000).toFixed(1)} s`,
-                shortLabel:   `${bpm.toFixed(1)} Atemz/min`,
-                bpm,
-                breathRhythm: { inhale: ms, holdIn: 0, exhale: ms, holdOut: 0 },
-            };
+    _nextPhaseEvent() {
+        if (!this._active) return Promise.reject(new CancelledError());
+        return new Promise((resolve, reject) => {
+            this._phaseWaiters.push({ resolve, reject });
         });
     }
 
-    _buildStep2Patterns(optimumBpm) {
-        return [-0.2, -0.1, 0, 0.1, 0.2]
-            .map(d => Math.round((optimumBpm + d) * 10) / 10)
-            .filter(bpm => bpm >= 3.5 && bpm <= 9.0)
-            .map(bpm => {
-                const ms = bpmToHalfCycleMs(bpm);
-                return {
-                    label:        `${bpm.toFixed(1)} Atemz/min  ·  ${(ms/1000).toFixed(1)} s / ${(ms/1000).toFixed(1)} s`,
-                    shortLabel:   `${bpm.toFixed(1)} Atemz/min`,
-                    bpm,
-                    breathRhythm: { inhale: ms, holdIn: 0, exhale: ms, holdOut: 0 },
-                };
-            });
+    async _waitUntilPhase(target) {
+        for (;;) {
+            const evt = await this._nextPhaseEvent();
+            if (evt.phase === target) return evt;
+        }
     }
 
-    /** Schritt 3: Verhältnis Ein:Aus variieren, Zyklusdauer bleibt fix */
-    _buildStep3Patterns(step2Rhythm) {
-        const { inhale, exhale } = step2Rhythm;
-        const cycleDurationMs    = inhale + exhale;
-        return [35, 40, 45, 50, 55].map(ratioIn => {
-            const inhaleMs = Math.round(cycleDurationMs * ratioIn / 10000) * 100;
-            const exhaleMs = cycleDurationMs - inhaleMs;
-            const inS = (inhaleMs / 1000).toFixed(1);
-            const exS = (exhaleMs / 1000).toFixed(1);
-            return {
-                label:        `${ratioIn}:${100 - ratioIn}  ·  ${inS} s Ein / ${exS} s Aus`,
-                shortLabel:   `${ratioIn}:${100 - ratioIn}  (${inS} s / ${exS} s)`,
-                breathRhythm: { inhale: inhaleMs, holdIn: 0, exhale: exhaleMs, holdOut: 0 },
-            };
+    _wait(ms) {
+        if (!this._active) return Promise.reject(new CancelledError());
+        return new Promise((resolve, reject) => {
+            this._waitReject = reject;
+            this._waitTimer = setTimeout(() => {
+                this._waitReject = null;
+                resolve();
+            }, ms);
         });
-    }
-
-    /** Schritt 4A: Pausen grob (0 / 1,0 / 2,0 s) beim optimalen Verhältnis */
-    _buildStep4APatterns(step3Rhythm) {
-        const { inhale, exhale } = step3Rhythm;
-        const inS = (inhale / 1000).toFixed(1);
-        const exS = (exhale / 1000).toFixed(1);
-        return [
-            { holdIn: 0,    holdOut: 0,    suffix: 'kein Halt' },
-            { holdIn: 1000, holdOut: 0,    suffix: 'Halt-In 1,0 s' },
-            { holdIn: 2000, holdOut: 0,    suffix: 'Halt-In 2,0 s' },
-            { holdIn: 0,    holdOut: 1000, suffix: 'Halt-Out 1,0 s' },
-            { holdIn: 0,    holdOut: 2000, suffix: 'Halt-Out 2,0 s' },
-            { holdIn: 1000, holdOut: 1000, suffix: 'In 1,0 s + Out 1,0 s' },
-        ].map(p => ({
-            label:        `${inS} s / ${exS} s  ·  ${p.suffix}`,
-            shortLabel:   p.suffix,
-            breathRhythm: { inhale, holdIn: p.holdIn, exhale, holdOut: p.holdOut },
-        }));
     }
 
     /**
-     * Schritt 4B: Pausen fein (± 0,2 s in 0,1-Schritten).
-     * Findet den dominanten Halt-Typ aus 4A und variiert diesen.
+     * Zyklus-ausgerichtete HRmax−HRmin-Messung über mehrere Atemzyklen.
+     * @param {number} cyclesTotal
+     * @param {number} discardCycles - erste N Zyklen zur Einschwingung verwerfen
+     * @param {function} [onSample] - (cycleIdx, cyclesTotal, amplitude|null) => void
      */
-    _buildStep4BPatterns(step4AOptimumRhythm) {
-        const { inhale, exhale, holdIn, holdOut } = step4AOptimumRhythm;
-        const inS = (inhale / 1000).toFixed(1);
-        const exS = (exhale / 1000).toFixed(1);
-
-        // Dominanter Halt-Typ (bei 0/0 default: Halt-In)
-        const isHoldInDominant = holdIn >= holdOut;
-        const dominantMs       = isHoldInDominant ? holdIn : holdOut;
-
-        return [-200, -100, 0, 100, 200].map(delta => {
-            const newVal    = Math.max(0, dominantMs + delta);
-            const newHoldIn  = isHoldInDominant ? newVal  : holdIn;
-            const newHoldOut = !isHoldInDominant ? newVal : holdOut;
-            const hiS = (newHoldIn  / 1000).toFixed(1);
-            const hoS = (newHoldOut / 1000).toFixed(1);
-            return {
-                label:        `${inS} s / ${exS} s  ·  H-In ${hiS} s / H-Out ${hoS} s`,
-                shortLabel:   `H-In ${hiS} s / H-Out ${hoS} s`,
-                breathRhythm: { inhale, holdIn: newHoldIn, exhale, holdOut: newHoldOut },
-            };
-        });
+    async _measureCycleAmplitude(cyclesTotal, discardCycles, onSample) {
+        const amplitudes = [];
+        let evt = await this._waitUntilPhase('inhale');
+        let cycleStart = evt.ts;
+        for (let c = 0; c < cyclesTotal; c++) {
+            const exhaleEvt = await this._waitUntilPhase('exhale');
+            const nextInhaleEvt = await this._waitUntilPhase('inhale');
+            const amp = this.hrv.cycleAmplitude(cycleStart, exhaleEvt.ts, nextInhaleEvt.ts);
+            if (c >= discardCycles && amp !== null) amplitudes.push(amp);
+            onSample?.(c + 1, cyclesTotal, amp);
+            cycleStart = nextInhaleEvt.ts;
+        }
+        return trimmedMean(amplitudes);
     }
 
-    // ─── Ablauf ───────────────────────────────────────────────────────────────
+    /**
+     * RMSSD/Kohärenz-Messung über ein festes Zeitfenster (in Atemzyklen).
+     * Isoliert das Fenster per hrv.reset(), damit keine Daten des vorigen
+     * Kandidaten hineinbluten.
+     * @param {number} cyclesTotal
+     * @param {number} discardCycles - Einschwingzeit vor der eigentlichen Messung
+     * @param {number} cycleMs
+     * @param {function} [onSample] - (rmssd, sampleCount) => void
+     */
+    async _measureRmssdWindow(cyclesTotal, discardCycles, cycleMs, onSample) {
+        const discardMs = discardCycles * cycleMs;
+        const measureMs = (cyclesTotal - discardCycles) * cycleMs;
+        if (discardMs > 0) await this._wait(discardMs);
 
-    _runCurrentPattern() {
-        if (!this._active) return;
-        this._startTime      = Date.now();
-        this._phase          = 'acclimation';
-        this._measureSamples = [];
-
-        const pat = this._patterns[this._patternIdx];
-        if (this.onPatternStart) {
-            this.onPatternStart(this._step, this._patternIdx, pat, this._patterns.length, this._step4Phase);
+        this.hrv.reset();
+        const samples = [];
+        const startTs = performance.now();
+        while (performance.now() - startTs < measureMs) {
+            await this._wait(Math.min(RMSSD_SAMPLE_MS, measureMs));
+            const r = this.hrv.rmssd();
+            if (r > 0) samples.push(r);
+            onSample?.(r, samples.length);
         }
-        if (this.onPhaseChange) this.onPhaseChange('acclimation');
 
-        this._phaseTimer = setTimeout(() => {
-            if (!this._active) return;
-            this._phase = 'measurement';
-            if (this.onPhaseChange) this.onPhaseChange('measurement');
+        const avgRmssd = trimmedMean(samples);
+        let coherenceScore = 0;
+        if (this.hrv.dataSpanSeconds >= 30) {
+            const fft = this.hrv.frequencyAnalysis();
+            if (fft) coherenceScore = fft.coherenceScore;
+        }
+        return { avgRmssd: Math.round(avgRmssd), coherenceScore };
+    }
+}
 
-            this._samTimer = setInterval(() => {
-                if (!this._active) { clearInterval(this._samTimer); return; }
-                const rmssd = this.hrv.rmssd();
-                if (rmssd > 0) this._measureSamples.push(rmssd);
-                if (this.onRmssdSample) this.onRmssdSample(Math.round(rmssd), this.getAvgRmssd());
-            }, SAMPLE_SEC * 1000);
+// ─── Protokoll 1: Frequenz-Scan ──────────────────────────────────────────────
 
-            this._phaseTimer = setTimeout(() => {
-                if (!this._active) return;
-                clearInterval(this._samTimer);
-                this._samTimer = null;
-                this._completePattern();
-            }, MEASUREMENT_SEC * 1000);
-        }, ACCLIMATION_SEC * 1000);
+export class FrequencyTest extends CalibrationTestBase {
+    constructor(hrv, db) {
+        super(hrv, db);
+        this.onCandidateStart = null; // (idx, total, bpm) => void  [Phase 1]
+        this.onCycleSample    = null; // (cycleIdx, total, amplitude|null) => void
+        this.onPhase1Done     = null; // (rawResults, smoothed, finalists) => void
+        this.onFinalistStart  = null; // (idx, total, bpm, subPhase) => void  [Phase 2]
+        this.onRmssdSample    = null; // (rmssd, sampleCount) => void
+        this.onFinalistDone   = null; // (idx, finalistResults) => void
+        this.onComplete       = null; // (winner, fullResult) => void
     }
 
-    _completePattern() {
-        const avgRmssd = this.getAvgRmssd() ?? 0;
-        const pat      = this._patterns[this._patternIdx];
+    async start() {
+        this._active = true;
+        try {
+            const grid = buildFrequencyGrid();
+            const rawResults = [];
 
-        // Ergebnis in den richtigen Bucket schreiben
-        const bucket = (this._step === 4 && this._step4Phase) ? `4${this._step4Phase}` : this._step;
-        if (!this._results[bucket]) this._results[bucket] = [];
-        this._results[bucket].push({ ...pat, avgRmssd });
-
-        const nextIdx = this._patternIdx + 1;
-        if (nextIdx < this._patterns.length) {
-            this._patternIdx = nextIdx;
-            this._runCurrentPattern();
-        } else {
-            this._finishStep();
-        }
-    }
-
-    _finishStep() {
-        const bucket      = (this._step === 4 && this._step4Phase) ? `4${this._step4Phase}` : this._step;
-        const stepResults = this._results[bucket] ?? [];
-
-        let optimumIdx = 0;
-        stepResults.forEach((r, i) => {
-            if (r.avgRmssd > stepResults[optimumIdx].avgRmssd) optimumIdx = i;
-        });
-        const optimum = stepResults[optimumIdx];
-
-        // ── Schritt 4 Phase A → Phase B (automatisch, kein Stop) ─────────────
-        if (this._step === 4 && this._step4Phase === 'A') {
-            this._step4AOptimum = optimum;
-            this._step4Phase    = 'B';
-            this._patternIdx    = 0;
-            this._patterns      = this._buildStep4BPatterns(optimum.breathRhythm);
-
-            if (this.onStep4Progress) this.onStep4Progress(stepResults, optimumIdx);
-
-            this._runCurrentPattern();  // direkt weiter, kein Pause
-            return;
-        }
-
-        // ── Schritt abgeschlossen → pausieren ─────────────────────────────────
-        this._active = false;
-        const doneStep = this._step;
-
-        // Schritt-Ergebnis in DB speichern (als Setting, sofort abrufbar)
-        this.db.setSetting(`resonanzStep${doneStep}Optimum`, {
-            bpm:          optimum.bpm,
-            breathRhythm: optimum.breathRhythm,
-            avgRmssd:     optimum.avgRmssd,
-            label:        optimum.shortLabel ?? optimum.label,
-            date:         new Date().toISOString(),
-        }).catch(() => {});
-
-        // Im Komplett-Test: nächsten Schritt vorbereiten
-        if (!this._stepOnly && doneStep < 4) {
-            this._step++;
-            this._patternIdx = 0;
-            if (this._step === 2) {
-                this._patterns = this._buildStep2Patterns(optimum.bpm);
-            } else if (this._step === 3) {
-                this._patterns = this._buildStep3Patterns(optimum.breathRhythm);
-            } else if (this._step === 4) {
-                this._step4Phase = 'A';
-                this._patterns = this._buildStep4APatterns(optimum.breathRhythm);
+            for (let i = 0; i < grid.length; i++) {
+                const bpm = grid[i];
+                this.onCandidateStart?.(i, grid.length, bpm);
+                this.onRhythmChange?.(symmetricRhythm(bpm));
+                const amplitude = await this._measureCycleAmplitude(
+                    PHASE1_CYCLES, PHASE1_DISCARD,
+                    (c, total, amp) => this.onCycleSample?.(c, total, amp)
+                );
+                rawResults.push({ bpm, amplitude });
             }
+
+            const xs = rawResults.map(r => r.bpm);
+            const ys = rawResults.map(r => r.amplitude);
+            const { a, b, c } = quadraticFit(xs, ys);
+            const smoothed = rawResults.map(r => ({ ...r, smoothed: a * r.bpm * r.bpm + b * r.bpm + c }));
+            const finalists = [...smoothed]
+                .sort((x, y) => y.smoothed - x.smoothed)
+                .slice(0, TOP_N)
+                .sort((x, y) => x.bpm - y.bpm);
+
+            this.onPhase1Done?.(rawResults, smoothed, finalists);
+
+            const finalistResults = [];
+            for (let i = 0; i < finalists.length; i++) {
+                const bpm = finalists[i].bpm;
+                const cycleMs = bpmToCycleMs(bpm);
+                const rhythm = symmetricRhythm(bpm);
+
+                this.onFinalistStart?.(i, finalists.length, bpm, 'acclimation');
+                this.onRhythmChange?.(rhythm);
+                await this._wait(PHASE2_ACCLIM_SEC * 1000);
+
+                this.onFinalistStart?.(i, finalists.length, bpm, 'measurement');
+                const cyclesInMeasure = Math.max(1, Math.round((PHASE2_MEASURE_SEC * 1000) / cycleMs));
+                const { avgRmssd, coherenceScore } = await this._measureRmssdWindow(
+                    cyclesInMeasure, 0, cycleMs,
+                    (r, n) => this.onRmssdSample?.(r, n)
+                );
+
+                finalistResults.push({ bpm, rhythm, avgRmssd, coherenceScore });
+                this.onFinalistDone?.(i, finalistResults);
+            }
+
+            const winner = pickWinner(finalistResults);
+            const result = { grid: rawResults, smoothed, finalists: finalistResults, winner };
+
+            await this.db.saveFrequencyTest(result).catch(() => {});
+            this.hrv.resonanceFreq = winner.bpm / 60;
+            await Promise.all([
+                this.db.setSetting('resonanceFreq', this.hrv.resonanceFreq),
+                this.db.setSetting('breathRhythm', winner.rhythm),
+            ]).catch(() => {});
+
+            this._active = false;
+            this.onComplete?.(winner, result);
+        } catch (err) {
+            this._active = false;
+            if (err instanceof CancelledError) { this.onCancelled?.(); return; }
+            throw err;
         }
+    }
+}
 
-        if (this.onStepDone) this.onStepDone(doneStep, stepResults, optimumIdx);
+// ─── Protokoll 2: Verhältnis & Pausen ────────────────────────────────────────
 
-        if (doneStep === 4) this._saveAndFinish(optimum);
+export class RhythmTest extends CalibrationTestBase {
+    /** @param {number} baseBpm - Ergebnis aus Protokoll 1 */
+    constructor(hrv, db, baseBpm) {
+        super(hrv, db);
+        this.baseBpm = baseBpm;
+        this.cycleMs = bpmToCycleMs(baseBpm);
+
+        this.onStageStart  = null; // (stage, idx, total, info) => void
+        this.onRmssdSample = null; // (rmssd, sampleCount) => void
+        this.onStageResult = null; // (stage, idx, resultsSoFar) => void
+        this.onStageDone   = null; // (stage, results, winner) => void
+        this.onComplete    = null; // (winner, fullResult) => void
     }
 
-    async _saveAndFinish(finalOptimum) {
-        const result = {
-            date:        new Date().toISOString(),
-            step1:       this._results[1],
-            step2:       this._results[2],
-            step3:       this._results[3],
-            step4A:      this._results['4A'],
-            step4B:      this._results['4B'],
-            finalRhythm: finalOptimum.breathRhythm,
-            finalRmssd:  finalOptimum.avgRmssd,
-        };
-        await this.db.saveResonanzResult(result).catch(() => {});
-        if (this.onComplete) this.onComplete(finalOptimum, result);
+    async _measureCandidate(rhythm) {
+        return this._measureRmssdWindow(
+            STAGE_CYCLES, STAGE_DISCARD, this.cycleMs,
+            (r, n) => this.onRmssdSample?.(r, n)
+        );
     }
 
-    static rhythmToString(r) {
-        if (!r) return '—';
-        const s = ms => (ms / 1000).toFixed(1) + ' s';
-        const parts = [s(r.inhale)];
-        if (r.holdIn)  parts.push(`H-In ${s(r.holdIn)}`);
-        parts.push(s(r.exhale));
-        if (r.holdOut) parts.push(`H-Out ${s(r.holdOut)}`);
-        return parts.join(' / ');
+    async start() {
+        this._active = true;
+        try {
+            // ── Stufe A: Ein:Aus-Verhältnis ─────────────────────────────────
+            const ratios = [35, 40, 45, 50, 55];
+            const stageAResults = [];
+            for (let i = 0; i < ratios.length; i++) {
+                const ratioIn = ratios[i];
+                const inhale = Math.round(this.cycleMs * ratioIn / 100 / 100) * 100;
+                const rhythm = { inhale, holdIn: 0, exhale: this.cycleMs - inhale, holdOut: 0 };
+
+                this.onStageStart?.('A', i, ratios.length, { ratioIn, rhythm });
+                this.onRhythmChange?.(rhythm);
+                const { avgRmssd, coherenceScore } = await this._measureCandidate(rhythm);
+
+                stageAResults.push({ ratioIn, ...rhythm, avgRmssd, coherenceScore });
+                this.onStageResult?.('A', i, stageAResults);
+            }
+            const ratioWinner = pickWinner(stageAResults);
+            this.onStageDone?.('A', stageAResults, ratioWinner);
+
+            // ── Stufe B Grob: Pausen (kein Halt / Halt-Ein / Halt-Aus / beide) ─
+            const grobDefs = [
+                { holdIn: 0,    holdOut: 0    },
+                { holdIn: 1000, holdOut: 0    },
+                { holdIn: 2000, holdOut: 0    },
+                { holdIn: 0,    holdOut: 1000 },
+                { holdIn: 0,    holdOut: 2000 },
+                { holdIn: 1000, holdOut: 1000 },
+            ];
+            const stageBGrobResults = [];
+            for (let i = 0; i < grobDefs.length; i++) {
+                const { holdIn, holdOut } = grobDefs[i];
+                const rhythm = buildPausePattern(ratioWinner.inhale, ratioWinner.exhale, this.cycleMs, holdIn, holdOut);
+
+                this.onStageStart?.('B-grob', i, grobDefs.length, { rhythm });
+                this.onRhythmChange?.(rhythm);
+                const { avgRmssd, coherenceScore } = await this._measureCandidate(rhythm);
+
+                stageBGrobResults.push({ ...rhythm, avgRmssd, coherenceScore });
+                this.onStageResult?.('B-grob', i, stageBGrobResults);
+            }
+            const grobWinner = pickWinner(stageBGrobResults);
+            this.onStageDone?.('B-grob', stageBGrobResults, grobWinner);
+
+            // ── Stufe B Fein: 3×3-Gitter Halt-Ein × Halt-Aus (Zentrum wiederverwendet) ─
+            const deltas = [-300, 0, 300];
+            const stageBFeinResults = [];
+            let idx = 0;
+            const feinTotal = deltas.length * deltas.length;
+            for (const dIn of deltas) {
+                for (const dOut of deltas) {
+                    if (dIn === 0 && dOut === 0) {
+                        stageBFeinResults.push({ ...grobWinner, reused: true });
+                        this.onStageResult?.('B-fein', idx, stageBFeinResults);
+                        idx++;
+                        continue;
+                    }
+                    const holdIn  = Math.max(0, grobWinner.holdIn  + dIn);
+                    const holdOut = Math.max(0, grobWinner.holdOut + dOut);
+                    const rhythm = buildPausePattern(ratioWinner.inhale, ratioWinner.exhale, this.cycleMs, holdIn, holdOut);
+
+                    this.onStageStart?.('B-fein', idx, feinTotal, { rhythm });
+                    this.onRhythmChange?.(rhythm);
+                    const { avgRmssd, coherenceScore } = await this._measureCandidate(rhythm);
+
+                    stageBFeinResults.push({ ...rhythm, avgRmssd, coherenceScore });
+                    this.onStageResult?.('B-fein', idx, stageBFeinResults);
+                    idx++;
+                }
+            }
+            const winner = pickWinner(stageBFeinResults);
+            this.onStageDone?.('B-fein', stageBFeinResults, winner);
+
+            const result = {
+                baseBpm: this.baseBpm,
+                stageA: stageAResults, ratioWinner,
+                stageBGrob: stageBGrobResults, grobWinner,
+                stageBFein: stageBFeinResults,
+                winner,
+            };
+
+            await this.db.saveRhythmTest(result).catch(() => {});
+            const finalRhythm = { inhale: winner.inhale, holdIn: winner.holdIn, exhale: winner.exhale, holdOut: winner.holdOut };
+            await this.db.setSetting('breathRhythm', finalRhythm).catch(() => {});
+
+            this._active = false;
+            this.onComplete?.(winner, result);
+        } catch (err) {
+            this._active = false;
+            if (err instanceof CancelledError) { this.onCancelled?.(); return; }
+            throw err;
+        }
+    }
+}
+
+// ─── Protokoll 3: 5-Minuten-Check ────────────────────────────────────────────
+
+export class DailyCheck extends CalibrationTestBase {
+    /** @param {{inhale:number,holdIn:number,exhale:number,holdOut:number}} storedRhythm */
+    constructor(hrv, db, storedRhythm) {
+        super(hrv, db);
+        this.storedRhythm = storedRhythm;
+        const cycleMs = storedRhythm.inhale + storedRhythm.holdIn + storedRhythm.exhale + storedRhythm.holdOut;
+        this.storedBpm = 60000 / cycleMs;
+
+        this.onCandidateStart = null; // (idx, total, bpm) => void
+        this.onCycleSample    = null; // (cycleIdx, total, amplitude|null) => void
+        this.onCandidateDone  = null; // (idx, resultsSoFar) => void
+        this.onComplete       = null; // ({bpm, rhythm}, fullResult) => void
+    }
+
+    async start() {
+        this._active = true;
+        try {
+            const candidates = DAILY_OFFSETS
+                .map(o => Math.round(Math.min(GRID_END, Math.max(GRID_START, this.storedBpm + o)) * 100) / 100)
+                .filter((v, i, arr) => arr.indexOf(v) === i);
+
+            const results = [];
+            for (let i = 0; i < candidates.length; i++) {
+                const bpm = candidates[i];
+                this.onCandidateStart?.(i, candidates.length, bpm);
+                this.onRhythmChange?.(symmetricRhythm(bpm));
+                const amplitude = await this._measureCycleAmplitude(
+                    PHASE1_CYCLES, PHASE1_DISCARD,
+                    (c, total, amp) => this.onCycleSample?.(c, total, amp)
+                );
+                results.push({ bpm, amplitude });
+                this.onCandidateDone?.(i, results);
+            }
+
+            const rawWinner = results.reduce((best, r) => r.amplitude > best.amplitude ? r : best);
+
+            // Gedämpfte Übernahme (exponentielle Glättung, wie hrv.updateResonanceFrequency)
+            const smoothedFreqHz = 0.8 * (this.storedBpm / 60) + 0.2 * (rawWinner.bpm / 60);
+            const appliedBpm = Math.round(smoothedFreqHz * 60 * 100) / 100;
+
+            // Nur die Frequenz ändert sich – Verhältnis/Pausen aus Protokoll 2
+            // bleiben strukturell erhalten (proportionale Skalierung).
+            const oldCycleMs = this.storedRhythm.inhale + this.storedRhythm.holdIn + this.storedRhythm.exhale + this.storedRhythm.holdOut;
+            const newCycleMs = bpmToCycleMs(appliedBpm);
+            const scale = newCycleMs / oldCycleMs;
+            const rhythm = {
+                inhale:  Math.round(this.storedRhythm.inhale  * scale),
+                holdIn:  Math.round(this.storedRhythm.holdIn  * scale),
+                exhale:  Math.round(this.storedRhythm.exhale  * scale),
+                holdOut: Math.round(this.storedRhythm.holdOut * scale),
+            };
+
+            const result = { candidates: results, rawWinnerBpm: rawWinner.bpm, appliedBpm, rhythm };
+            await this.db.saveDailyCheck(result).catch(() => {});
+
+            this.hrv.resonanceFreq = smoothedFreqHz;
+            await Promise.all([
+                this.db.setSetting('resonanceFreq', smoothedFreqHz),
+                this.db.setSetting('breathRhythm', rhythm),
+            ]).catch(() => {});
+
+            this._active = false;
+            this.onComplete?.({ bpm: appliedBpm, rhythm }, result);
+        } catch (err) {
+            this._active = false;
+            if (err instanceof CancelledError) { this.onCancelled?.(); return; }
+            throw err;
+        }
     }
 }
