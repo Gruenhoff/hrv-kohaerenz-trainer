@@ -294,6 +294,9 @@ export class FrequencyTest extends CalibrationTestBase {
                 await this._wait(PHASE2_ACCLIM_SEC * 1000);
 
                 this.onFinalistStart?.(i, finalists.length, bpm, 'measurement');
+                // Zielfenster für den Kohärenz-Score auf diesen Kandidaten ausrichten
+                // (sonst misst frequencyAnalysis() Konzentration um eine veraltete Frequenz)
+                this.hrv.resonanceFreq = bpm / 60;
                 const cyclesInMeasure = Math.max(1, Math.round((PHASE2_MEASURE_SEC * 1000) / cycleMs));
                 const { avgRmssd, coherenceScore } = await this._measureRmssdWindow(
                     cyclesInMeasure, 0, cycleMs,
@@ -349,6 +352,9 @@ export class RhythmTest extends CalibrationTestBase {
 
     async start() {
         this._active = true;
+        // Zielfenster für den Kohärenz-Score auf die feste Basisfrequenz ausrichten
+        // (bleibt über das ganze Protokoll 2 gleich, da nur Verhältnis/Pausen variieren)
+        this.hrv.resonanceFreq = this.baseBpm / 60;
         try {
             // ── Stufe A: Ein:Aus-Verhältnis ─────────────────────────────────
             const ratios = [35, 40, 45, 50, 55];
