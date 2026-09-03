@@ -162,4 +162,13 @@ export class EdrBuffer {
         }
         return n ? sum / n : null;
     }
+
+    /** Anzahl erkannter R-Zacken im Zeitfenster (für Plausibilitätscheck gegen die echte HF) */
+    countInWindow(startMs, endMs) {
+        let n = 0;
+        for (let i = 0; i < this._ts.length; i++) {
+            if (this._ts[i] >= startMs && this._ts[i] <= endMs) n++;
+        }
+        return n;
+    }
 }

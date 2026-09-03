@@ -565,7 +565,10 @@ class App {
         this._adaptiveShowSection('adaptive-setup');
 
         const startBtn = document.getElementById('adaptive-start-btn');
-        if (startBtn) startBtn.onclick = () => this._adaptiveStart();
+        if (startBtn) {
+            startBtn.disabled = false; // Re-Entrancy-Sperre vom vorigen Lauf zurücksetzen
+            startBtn.onclick = () => this._adaptiveStart();
+        }
 
         const closeBtn = document.getElementById('adaptive-close-btn');
         if (closeBtn) closeBtn.onclick = () => { screen.style.display = 'none'; this._trainingModeShow('select'); };
@@ -589,6 +592,16 @@ class App {
             alert('Polar H10 muss verbunden sein.');
             return;
         }
+
+        // Re-Entrancy-Sperre: _runDailyCheck() kann bis zu 5 Min dauern — ohne Sperre
+        // würde ein zweiter Klick eine zweite AdaptiveTraining-Instanz erzeugen, die
+        // sich den BreathPacer streitig macht, während die erste für immer hängen bleibt.
+        const startBtn = document.getElementById('adaptive-start-btn');
+        if (startBtn) {
+            if (startBtn.disabled) return;
+            startBtn.disabled = true;
+        }
+
         this.audio.unlock();
 
         // Tagesaktuelle Frequenz sicherstellen — derselbe DailyCheck wie im Kohärenz-Training.
@@ -624,7 +637,6 @@ class App {
         };
         test.onSpeechCue = (text) => this.speechCoach.speak(text);
         test.onComplete  = (summary) => this._adaptiveOnComplete(summary);
-        test.onCancelled = () => this._adaptiveShowSection('adaptive-setup');
 
         this.speechCoach.onSpeechStart = () => this.audio.stop();
         this.speechCoach.onSpeechEnd   = () => this.audio.start();
@@ -646,7 +658,28 @@ class App {
         this._adaptiveStartTicker();
         this.audio.start();
 
-        test.start();
+        test.start().catch((err) => {
+            console.error('Adaptives Training: unerwarteter Fehler', err);
+            this._showError('Adaptives Training wurde wegen eines unerwarteten Fehlers beendet.');
+            this._adaptiveHardStop();
+        });
+    }
+
+    /**
+     * Aufräumen nach einem echten (nicht regulären) Fehler in der Regelschleife —
+     * anders als _adaptiveStop() wird hier NICHT versucht, eine Zusammenfassung zu
+     * speichern/anzuzeigen, da der interne Zustand der Session inkonsistent sein kann.
+     */
+    _adaptiveHardStop() {
+        clearInterval(this._adaptiveTicker);
+        if (this.adaptivePacer) { this.adaptivePacer.stop(); this.adaptivePacer.destroy(); this.adaptivePacer = null; }
+        this.speechCoach.stop();
+        this.audio.stop();
+        this.ble.disableEcgStream().catch(() => {});
+        this.adaptiveTest = null;
+        this._adaptiveShowSection('adaptive-setup');
+        const startBtn = document.getElementById('adaptive-start-btn');
+        if (startBtn) startBtn.disabled = false;
     }
 
     _adaptiveStartTicker() {
@@ -676,13 +709,24 @@ class App {
         const el = document.getElementById('adaptive-summary');
         if (el) {
             const fmt = ms => (ms / 1000).toFixed(1) + 's';
-            const rows = [
-                ['Ergebnis-Rhythmus', `${fmt(summary.rhythm.inhale)} ein / ${fmt(summary.rhythm.exhale)} aus`],
-                ['Einatmen', `${summary.adjustments.inhale.lengthen}× verlängert · ${summary.adjustments.inhale.shorten}× verkürzt · ${summary.adjustments.inhale.revert}× zurückgenommen`],
-                ['Ausatmen', `${summary.adjustments.exhale.lengthen}× verlängert · ${summary.adjustments.exhale.shorten}× verkürzt · ${summary.adjustments.exhale.revert}× zurückgenommen`],
-                ['Sprach-Hinweise', `${summary.speechCues}×`],
-                ['Beobachtete Zyklen', `${summary.cyclesObserved}`],
-            ];
+            const r = summary.rhythm;
+            const rhythmStr = [
+                `${fmt(r.inhale)} ein`,
+                r.holdIn  ? `${fmt(r.holdIn)} halten`  : null,
+                `${fmt(r.exhale)} aus`,
+                r.holdOut ? `${fmt(r.holdOut)} halten` : null,
+            ].filter(Boolean).join(' / ');
+
+            const phaseLabel = { inhale: 'Einatmen', holdIn: 'Halt-Ein', exhale: 'Ausatmen', holdOut: 'Halt-Aus' };
+            const rows = [['Ergebnis-Rhythmus', rhythmStr]];
+            for (const phase of ['inhale', 'holdIn', 'exhale', 'holdOut']) {
+                const a = summary.adjustments[phase];
+                if (!a || (a.lengthen === 0 && a.shorten === 0 && a.revert === 0)) continue; // ungenutzte Phase ausblenden
+                rows.push([phaseLabel[phase], `${a.lengthen}× verlängert · ${a.shorten}× verkürzt · ${a.revert}× zurückgenommen`]);
+            }
+            rows.push(['Sprach-Hinweise', `${summary.speechCues}×`]);
+            rows.push(['Beobachtete Zyklen', `${summary.cyclesObserved}`]);
+
             el.innerHTML = rows.map(([label, val]) => `
                 <div class="settings-row"><div class="settings-label">${label}</div><span style="font-size:0.85rem;text-align:right">${val}</span></div>
             `).join('');
@@ -1080,7 +1124,6 @@ class App {
         if (pacerWrap) pacerWrap.style.display = '';
 
         const check = new DailyCheck(this.hrv, this.db, storedRhythm);
-        this._dailyCheck = check;
 
         check.onRhythmChange = (rhythm) => this._calibSetPacer('p1cal-pacer-container', 'p1cal-breath-label', rhythm, check);
         check.onCandidateStart = (idx, total, bpm) => {

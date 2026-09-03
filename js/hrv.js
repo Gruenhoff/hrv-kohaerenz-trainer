@@ -20,6 +20,9 @@ const MAX_JUMP = 0.20; // 20% Sprung zum Vorwert
 // Abtastrate für Resampling (Hz)
 const RESAMPLE_RATE = 4;
 
+// Mindestbreite des Fensters für hrDirectionBefore(), sonst zu verrauscht/unzuverlässig
+const MIN_DIRECTION_WINDOW_MS = 1000;
+
 export class HRVAnalyzer {
     constructor() {
         this.rrBuffer = [];          // Gefilterte RR-Intervalle (ms)
@@ -168,16 +171,24 @@ export class HRVAnalyzer {
     }
 
     /**
-     * Richtung der HF unmittelbar vor einem Zeitpunkt (z.B. Phasenende): vergleicht
-     * die mittlere HF in zwei benachbarten Teilfenstern direkt davor.
-     * @param {number} atMs - Zeitpunkt (z.B. Phasenende), performance.now()-Achse
-     * @param {number} windowMs - Gesamtbreite des Analysefensters (wird hälftig geteilt)
+     * Richtung der HF unmittelbar vor einem Zeitpunkt (z.B. Segment-Ende): vergleicht
+     * die mittlere HF in zwei benachbarten Teilfenstern direkt davor. Das Fenster wird
+     * an `minMs` geklammert (z.B. Segment-Anfang), damit es bei kurzen Phasen nicht ins
+     * VORIGE Segment hineinliest — sonst würde die eigene Anpassungslogik (die Phasen
+     * verkürzen kann) das Problem mit der Zeit verschärfen statt es zu vermeiden.
+     * @param {number} atMs - Zeitpunkt (z.B. Segment-Ende), performance.now()-Achse
+     * @param {number} windowMs - Gewünschte Gesamtbreite des Analysefensters (wird hälftig geteilt)
+     * @param {number} [minMs] - untere Schranke fürs Fenster (z.B. Segment-Anfang)
      * @returns {'rising'|'falling'|'flat'|null}
      */
-    hrDirectionBefore(atMs, windowMs = 3000) {
-        const half = windowMs / 2;
-        const earlyMean = this.meanHRInWindow(atMs - windowMs, atMs - half);
-        const lateMean  = this.meanHRInWindow(atMs - half, atMs);
+    hrDirectionBefore(atMs, windowMs = 3000, minMs = -Infinity) {
+        const windowStart = Math.max(atMs - windowMs, minMs);
+        const available = atMs - windowStart;
+        if (available < MIN_DIRECTION_WINDOW_MS) return null; // zu wenig verlässliche Daten im Segment
+
+        const half = windowStart + available / 2;
+        const earlyMean = this.meanHRInWindow(windowStart, half);
+        const lateMean  = this.meanHRInWindow(half, atMs);
         if (earlyMean === null || lateMean === null) return null;
         const diff = lateMean - earlyMean;
         if (Math.abs(diff) < 0.3) return 'flat'; // < 0,3 bpm Unterschied gilt als Wendepunkt erreicht
@@ -186,16 +197,19 @@ export class HRVAnalyzer {
 
     /**
      * Zyklus-ausgerichtete RSA-Amplitude: HRmax während der Einatemphase minus
-     * HRmin während der Ausatemphase (Moonbird-Metrik), statt eines beliebigen
-     * rollierenden Zeitfensters. Grenzen kommen von BreathPacer.onPhaseChange.
+     * HRmin über den GESAMTEN Rest des Zyklus (Moonbird-Metrik), statt eines
+     * beliebigen rollierenden Zeitfensters. Grenzen kommen von BreathPacer.onPhaseChange.
      * @param {number} inhaleStart - performance.now() bei Beginn Einatmen
-     * @param {number} inhaleEnd   - performance.now() bei Ende Einatmen (= Beginn Ausatmen)
-     * @param {number} exhaleEnd   - performance.now() bei Ende Ausatmen
+     * @param {number} inhaleEnd   - performance.now() bei Ende Einatmen (= Beginn Halt-Ein/Ausatmen)
+     * @param {number} cycleEnd    - performance.now() beim Ende des GESAMTEN Zyklus (= Beginn des
+     *   nächsten Einatmens; deckt Halt-Ein + Ausatmen + Halt-Aus ab — bei fehlenden Halte-Phasen
+     *   fällt das mit dem Ausatem-Ende zusammen). Wichtig: NICHT das reine Ausatem-Ende übergeben,
+     *   sonst wird ein evtl. Minimum während Halt-Aus verpasst.
      * @returns {number|null} Amplitude in bpm, oder null wenn Daten fehlen
      */
-    cycleAmplitude(inhaleStart, inhaleEnd, exhaleEnd) {
+    cycleAmplitude(inhaleStart, inhaleEnd, cycleEnd) {
         const hrMax = this.maxHRInWindow(inhaleStart, inhaleEnd);
-        const hrMin = this.minHRInWindow(inhaleEnd, exhaleEnd);
+        const hrMin = this.minHRInWindow(inhaleEnd, cycleEnd);
         if (hrMax === null || hrMin === null) return null;
         return hrMax - hrMin;
     }
