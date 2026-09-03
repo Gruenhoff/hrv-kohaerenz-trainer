@@ -4,7 +4,7 @@
  */
 
 const DB_NAME = 'hrv-trainer';
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 
 const STORES = {
     SESSIONS:  'sessions',
@@ -102,6 +102,15 @@ export class Database {
                         autoIncrement: true,
                     });
                     sm.createIndex('date', 'date', { unique: false });
+                }
+
+                // Adaptives Training (Live-Regelschleife)
+                if (!db.objectStoreNames.contains('adaptiveTrainingSessions')) {
+                    const at = db.createObjectStore('adaptiveTrainingSessions', {
+                        keyPath: 'id',
+                        autoIncrement: true,
+                    });
+                    at.createIndex('date', 'date', { unique: false });
                 }
             };
 
@@ -276,6 +285,16 @@ export class Database {
 
     async getSleepMeasurements(limit = 10) {
         return this._getRecent('sleepMeasurements', limit);
+    }
+
+    // ─── Adaptives Training ──────────────────────────────────────────────────
+
+    async saveAdaptiveTrainingSession(result) {
+        return this._add('adaptiveTrainingSessions', { date: new Date().toISOString(), ...result });
+    }
+
+    async getAdaptiveTrainingSessions(limit = 10) {
+        return this._getRecent('adaptiveTrainingSessions', limit);
     }
 
     // ─── Statistiken ─────────────────────────────────────────────────────────

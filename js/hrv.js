@@ -151,6 +151,40 @@ export class HRVAnalyzer {
     }
 
     /**
+     * Mittlere Herzfrequenz (bpm) im gegebenen performance.now()-Zeitfenster, oder null ohne Daten.
+     * Für Wendepunkt-/Richtungs-Analyse (steigt/fällt die HF gerade) genutzt.
+     */
+    meanHRInWindow(startMs, endMs) {
+        let sum = 0, n = 0;
+        for (let i = 0; i < this.rrWallTimestamps.length; i++) {
+            const t = this.rrWallTimestamps[i];
+            if (t < startMs || t > endMs) continue;
+            const rr = this.rrBuffer[i];
+            if (rr <= 0) continue;
+            sum += 60000 / rr;
+            n++;
+        }
+        return n ? sum / n : null;
+    }
+
+    /**
+     * Richtung der HF unmittelbar vor einem Zeitpunkt (z.B. Phasenende): vergleicht
+     * die mittlere HF in zwei benachbarten Teilfenstern direkt davor.
+     * @param {number} atMs - Zeitpunkt (z.B. Phasenende), performance.now()-Achse
+     * @param {number} windowMs - Gesamtbreite des Analysefensters (wird hälftig geteilt)
+     * @returns {'rising'|'falling'|'flat'|null}
+     */
+    hrDirectionBefore(atMs, windowMs = 3000) {
+        const half = windowMs / 2;
+        const earlyMean = this.meanHRInWindow(atMs - windowMs, atMs - half);
+        const lateMean  = this.meanHRInWindow(atMs - half, atMs);
+        if (earlyMean === null || lateMean === null) return null;
+        const diff = lateMean - earlyMean;
+        if (Math.abs(diff) < 0.3) return 'flat'; // < 0,3 bpm Unterschied gilt als Wendepunkt erreicht
+        return diff > 0 ? 'rising' : 'falling';
+    }
+
+    /**
      * Zyklus-ausgerichtete RSA-Amplitude: HRmax während der Einatemphase minus
      * HRmin während der Ausatemphase (Moonbird-Metrik), statt eines beliebigen
      * rollierenden Zeitfensters. Grenzen kommen von BreathPacer.onPhaseChange.

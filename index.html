@@ -204,8 +204,33 @@
         <!-- ─── TRAINING ──────────────────────────────────── -->
         <section id="view-training" class="app-view">
 
+            <!-- ═══ MODUS-AUSWAHL ══════════════════════════════ -->
+            <div id="training-mode-select">
+                <div class="training-header"><h2>Training</h2></div>
+                <div class="rez-step-cards" style="padding:0 1.25rem">
+                    <div class="rez-step-card">
+                        <div class="rez-step-card-header">
+                            <div class="rez-step-body">
+                                <div class="rez-step-title">Kohärenz-Training</div>
+                                <div class="rez-step-desc">Geführtes Atemtraining in 4 Phasen</div>
+                            </div>
+                        </div>
+                        <button class="rez-step-start-btn" id="mode-coherence-btn">Öffnen</button>
+                    </div>
+                    <div class="rez-step-card">
+                        <div class="rez-step-card-header">
+                            <div class="rez-step-body">
+                                <div class="rez-step-title">Adaptives Training</div>
+                                <div class="rez-step-desc">Live-Regelschleife auf Basis deiner Resonanzwerte, mit EKG-Atemanalyse (Polar H10)</div>
+                            </div>
+                        </div>
+                        <button class="rez-step-start-btn" id="mode-adaptive-btn">Öffnen</button>
+                    </div>
+                </div>
+            </div><!-- /#training-mode-select -->
+
             <!-- ═══ SESSION SETUP (vor der Session) ══════════════ -->
-            <div id="session-setup">
+            <div id="session-setup" style="display:none">
 
                 <!-- Phase-Auswahl -->
                 <div class="training-header">
@@ -1266,6 +1291,67 @@
     .night-unit { font-size: 1rem; color: #666; }
     #night-screen .btn-settings-save { margin-top: 0.5rem; background: #1a1a1a; color: #999; box-shadow: none; }
     #night-screen .btn-stop-session { margin-top: 0.75rem; background: transparent; border: 1px solid #333; color: #666; }
+</style>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     ADAPTIVES TRAINING
+     ══════════════════════════════════════════════════════════ -->
+<div id="adaptive-screen" style="display:none">
+
+    <!-- Start -->
+    <div id="adaptive-setup">
+        <div class="rez-header">
+            <h2>Adaptives Training</h2>
+            <p class="rez-subhead">
+                Startet bei deiner Resonanzfrequenz, passt Ein-/Ausatmen danach live an
+                dein Herzfrequenz-Wendepunkt-Timing an. Sprach-Hinweise nur bei Bedarf.
+            </p>
+        </div>
+        <div class="ble-status-text" style="text-align:center;margin:1rem 0;color:var(--text-secondary)">Nicht verbunden</div>
+        <button class="rez-primary-btn" id="adaptive-start-btn">Training starten</button>
+        <button class="btn-stop-session" id="adaptive-close-btn" style="margin-top:0.5rem">Zurück</button>
+    </div>
+
+    <!-- Kalibrierung + adaptive Phase (gleicher Pacer, nur Statuszeile ändert sich) -->
+    <div id="adaptive-active" style="display:none">
+        <div class="rez-pattern-card">
+            <div class="rez-pattern-name" id="adaptive-status-label">Kalibrierung läuft…</div>
+        </div>
+        <div id="adaptive-pacer-container" class="pacer-orb-host" style="height:220px"></div>
+        <div class="pacer-text-row">
+            <span id="adaptive-breath-label" class="breath-phase-lbl">—</span>
+            <span id="adaptive-breath-countdown" class="breath-countdown-lbl"></span>
+        </div>
+        <div id="adaptive-elapsed" style="text-align:center;font-size:0.85rem;color:var(--text-secondary);margin-top:0.5rem">00:00</div>
+        <button class="btn-stop-session" id="adaptive-stop-btn">Beenden</button>
+    </div>
+
+    <!-- Ergebnis -->
+    <div id="adaptive-result" style="display:none">
+        <div class="rez-header">
+            <h2>Training beendet</h2>
+            <p class="rez-subhead">Zusammenfassung der Live-Anpassungen</p>
+        </div>
+        <div id="adaptive-summary" class="rez-final-card" style="text-align:left;padding:1rem 1.25rem"></div>
+        <button class="rez-primary-btn" id="adaptive-done-btn">Fertig</button>
+    </div>
+
+</div><!-- /#adaptive-screen -->
+
+<style>
+    #adaptive-screen {
+        position: fixed;
+        inset: 0;
+        z-index: 900;
+        background: var(--bg-primary);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1.5rem;
+        overflow-y: auto;
+    }
+    #adaptive-screen > div { width: 100%; max-width: 400px; margin: auto; }
 </style>
 
 

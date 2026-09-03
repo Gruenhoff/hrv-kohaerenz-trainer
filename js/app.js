@@ -13,6 +13,8 @@ import { Dashboard }      from './dashboard.js';
 import { Zone2 }          from './zone2.js';
 import { FrequencyTest, RhythmTest, DailyCheck, rhythmToString } from './resonanz.js';
 import { NightRecording } from './nightRecording.js';
+import { AdaptiveTraining } from './adaptiveTraining.js';
+import { SpeechCoach } from './speech.js';
 
 // ─── Phasenspezifische Dauer-Optionen ────────────────────────────────────────
 const PHASE_DURATIONS = {
@@ -86,6 +88,12 @@ class App {
         this.night        = new NightRecording();
         this._nightTicker = null;
         this._wakeLock     = null;
+
+        // Adaptives Training
+        this.adaptiveTest    = null;
+        this.adaptivePacer   = null;
+        this._adaptiveTicker = null;
+        this.speechCoach     = new SpeechCoach();
 
         // Volles Training (Phase 1 → 2 → 3 automatisch)
         this.fullTraining = {
@@ -332,6 +340,10 @@ class App {
             }
         };
 
+        this.ble.onEcgSample = (uv, tsMs) => {
+            if (this.adaptiveTest?.active) this.adaptiveTest.addEcgSample(uv, tsMs);
+        };
+
         this.ble.onConnect = () => {
             this._setConnectionStatus(true);
         };
@@ -370,12 +382,46 @@ class App {
     // ─── Training-Session ────────────────────────────────────────────────────
 
     _initTrainingView() {
-        // Wenn Session aktiv → direkt Active-View zeigen
+        // Laufendes Adaptives Training bzw. laufende Kohärenz-Session direkt wiederherstellen
+        if (this.adaptiveTest?.active) {
+            this._trainingModeShow('adaptive');
+            this._adaptiveShowSection('adaptive-active');
+            return;
+        }
         if (this.session.active) {
+            this._trainingModeShow('coherence');
             document.getElementById('session-setup').style.display  = 'none';
             document.getElementById('session-active').style.display = '';
             return;
         }
+
+        // Nichts aktiv → Modus-Auswahl zeigen
+        this._trainingModeShow('select');
+
+        const coherenceBtn = document.getElementById('mode-coherence-btn');
+        if (coherenceBtn) {
+            coherenceBtn.onclick = () => {
+                this._trainingModeShow('coherence');
+                this._initCoherenceTrainingSetup();
+            };
+        }
+        const adaptiveBtn = document.getElementById('mode-adaptive-btn');
+        if (adaptiveBtn) adaptiveBtn.onclick = () => this._adaptiveOpen();
+    }
+
+    /** Blendet genau einen der drei Trainings-Einstiegs-Bereiche ein */
+    _trainingModeShow(mode) {
+        const select = document.getElementById('training-mode-select');
+        const setup  = document.getElementById('session-setup');
+        if (select) select.style.display = mode === 'select' ? '' : 'none';
+        if (setup)  setup.style.display  = mode === 'coherence' ? '' : 'none';
+        if (mode !== 'adaptive') {
+            const screen = document.getElementById('adaptive-screen');
+            if (screen) screen.style.display = 'none';
+        }
+    }
+
+    _initCoherenceTrainingSetup() {
         document.getElementById('session-setup').style.display  = '';
         document.getElementById('session-active').style.display = 'none';
 
@@ -506,6 +552,140 @@ class App {
                     if (wrapper) wrapper.style.setProperty('--pulse-scale', '1');
                 }
             });
+        }
+    }
+
+    // ─── Adaptives Training ─────────────────────────────────────────────────
+
+    _adaptiveOpen() {
+        const screen = document.getElementById('adaptive-screen');
+        if (!screen) return;
+        this._trainingModeShow('adaptive'); // blendet Modus-Auswahl/session-setup darunter aus
+        screen.style.display = '';
+        this._adaptiveShowSection('adaptive-setup');
+
+        const startBtn = document.getElementById('adaptive-start-btn');
+        if (startBtn) startBtn.onclick = () => this._adaptiveStart();
+
+        const closeBtn = document.getElementById('adaptive-close-btn');
+        if (closeBtn) closeBtn.onclick = () => { screen.style.display = 'none'; this._trainingModeShow('select'); };
+
+        const stopBtn = document.getElementById('adaptive-stop-btn');
+        if (stopBtn) stopBtn.onclick = () => this._adaptiveStop();
+
+        const doneBtn = document.getElementById('adaptive-done-btn');
+        if (doneBtn) doneBtn.onclick = () => { screen.style.display = 'none'; this._trainingModeShow('select'); };
+    }
+
+    _adaptiveShowSection(id) {
+        ['adaptive-setup', 'adaptive-active', 'adaptive-result'].forEach(sid => {
+            const el = document.getElementById(sid);
+            if (el) el.style.display = sid === id ? '' : 'none';
+        });
+    }
+
+    async _adaptiveStart() {
+        if (!this.ble.isConnected) {
+            alert('Polar H10 muss verbunden sein.');
+            return;
+        }
+        this.audio.unlock();
+
+        // Tagesaktuelle Frequenz sicherstellen — derselbe DailyCheck wie im Kohärenz-Training.
+        // #p1cal-screen liegt innerhalb von #view-training, #adaptive-screen als fixiertes
+        // Overlay DARÜBER — kurz ausblenden, sonst wäre der DailyCheck unsichtbar dahinter.
+        const screen = document.getElementById('adaptive-screen');
+        if (screen) screen.style.display = 'none';
+        await this._runDailyCheck();
+        if (screen) screen.style.display = '';
+
+        // EKG/PMD-Stream für die EDR-Atemtiefe aktivieren (best effort — läuft ohne weiter,
+        // nur die Atemtiefe-Sprachhinweise entfallen dann, siehe AdaptiveTraining._checkEdrFeedback)
+        const ecgOk = await this.ble.enableEcgStream();
+        if (!ecgOk) {
+            this._showToast('EKG-Stream nicht verfügbar – Atemtiefe-Hinweise entfallen, Live-Anpassung läuft trotzdem.');
+        }
+
+        const baseRhythm = { ...this.session.breathRhythm };
+        const test = new AdaptiveTraining(this.hrv, this.db, baseRhythm);
+        this.adaptiveTest = test;
+
+        test.onRhythmChange = (rhythm) => {
+            // Rhythmus nahtlos übernehmen: startTime neu setzen, damit die Modulo-Animation
+            // nicht springt (die Anpassung erfolgt ohnehin an einer frischen Zyklusgrenze).
+            if (this.adaptivePacer) {
+                this.adaptivePacer.rhythm = rhythm;
+                this.adaptivePacer.startTime = performance.now();
+            }
+        };
+        test.onCalibrationDone = () => {
+            const label = document.getElementById('adaptive-status-label');
+            if (label) label.textContent = '';
+        };
+        test.onSpeechCue = (text) => this.speechCoach.speak(text);
+        test.onComplete  = (summary) => this._adaptiveOnComplete(summary);
+        test.onCancelled = () => this._adaptiveShowSection('adaptive-setup');
+
+        this.speechCoach.onSpeechStart = () => this.audio.stop();
+        this.speechCoach.onSpeechEnd   = () => this.audio.start();
+
+        const container    = document.getElementById('adaptive-pacer-container');
+        const labelEl       = document.getElementById('adaptive-breath-label');
+        const countdownEl   = document.getElementById('adaptive-breath-countdown');
+        if (this.adaptivePacer) this.adaptivePacer.destroy();
+        if (container) {
+            this.adaptivePacer = new BreathPacer(container, baseRhythm, labelEl, countdownEl, this.audio);
+            this.adaptivePacer.onPhaseChange = (phase) => test.notifyPhaseChange(phase);
+            this.adaptivePacer.start();
+        }
+
+        const statusLabel = document.getElementById('adaptive-status-label');
+        if (statusLabel) statusLabel.textContent = 'Kalibrierung läuft…';
+
+        this._adaptiveShowSection('adaptive-active');
+        this._adaptiveStartTicker();
+        this.audio.start();
+
+        test.start();
+    }
+
+    _adaptiveStartTicker() {
+        clearInterval(this._adaptiveTicker);
+        const startTs = performance.now();
+        this._adaptiveTicker = setInterval(() => {
+            const el = document.getElementById('adaptive-elapsed');
+            if (!el) return;
+            const s = Math.floor((performance.now() - startTs) / 1000);
+            el.textContent = `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+        }, 1000);
+    }
+
+    async _adaptiveStop() {
+        clearInterval(this._adaptiveTicker);
+        if (this.adaptivePacer) { this.adaptivePacer.stop(); this.adaptivePacer.destroy(); this.adaptivePacer = null; }
+        this.speechCoach.stop();
+        this.audio.stop();
+        await this.ble.disableEcgStream();
+        if (this.adaptiveTest) await this.adaptiveTest.stop(); // löst onComplete aus → zeigt Zusammenfassung
+    }
+
+    _adaptiveOnComplete(summary) {
+        this.adaptiveTest = null;
+        this._adaptiveShowSection('adaptive-result');
+
+        const el = document.getElementById('adaptive-summary');
+        if (el) {
+            const fmt = ms => (ms / 1000).toFixed(1) + 's';
+            const rows = [
+                ['Ergebnis-Rhythmus', `${fmt(summary.rhythm.inhale)} ein / ${fmt(summary.rhythm.exhale)} aus`],
+                ['Einatmen', `${summary.adjustments.inhale.lengthen}× verlängert · ${summary.adjustments.inhale.shorten}× verkürzt · ${summary.adjustments.inhale.revert}× zurückgenommen`],
+                ['Ausatmen', `${summary.adjustments.exhale.lengthen}× verlängert · ${summary.adjustments.exhale.shorten}× verkürzt · ${summary.adjustments.exhale.revert}× zurückgenommen`],
+                ['Sprach-Hinweise', `${summary.speechCues}×`],
+                ['Beobachtete Zyklen', `${summary.cyclesObserved}`],
+            ];
+            el.innerHTML = rows.map(([label, val]) => `
+                <div class="settings-row"><div class="settings-label">${label}</div><span style="font-size:0.85rem;text-align:right">${val}</span></div>
+            `).join('');
         }
     }
 
