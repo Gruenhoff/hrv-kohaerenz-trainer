@@ -13,16 +13,19 @@ export class Dashboard {
         const stats = await this.db.getStats();
         const baseline = await this.db.getBaseline();
         const anchors = await this.db.getAnchors();
+        const adaptiveSessions = await this.db.getAdaptiveTrainingSessions(14);
 
-        container.innerHTML = this._buildHTML(stats, baseline);
+        container.innerHTML = this._buildHTML(stats, baseline, adaptiveSessions);
         if (stats) {
             this._buildCharts(stats.recentSessions);
             this._fillStats(stats, baseline);
         }
+        this._buildAdaptiveCharts(adaptiveSessions);
     }
 
-    _buildHTML(stats, baseline) {
+    _buildHTML(stats, baseline, adaptiveSessions = []) {
         const hasData = stats && stats.totalSessions > 0;
+        const hasAdaptiveData = adaptiveSessions && adaptiveSessions.length > 0;
         return `
             <!-- Statistik-Karten -->
             <div class="stats-grid">
@@ -88,6 +91,24 @@ export class Dashboard {
                 <p>Noch keine Sessions aufgezeichnet.<br>Starte dein erstes Training!</p>
             </div>
             `}
+
+            ${hasAdaptiveData ? `
+            <!-- Adaptives Training: RMSSD-Verlauf -->
+            <div class="dash-section">
+                <h3 class="dash-section-title">Adaptives Training — RMSSD-Verlauf</h3>
+                <div class="chart-wrapper">
+                    <canvas id="chart-adaptive-rmssd"></canvas>
+                </div>
+            </div>
+
+            <!-- Adaptives Training: Zyklus-Amplitude-Verlauf -->
+            <div class="dash-section">
+                <h3 class="dash-section-title">Adaptives Training — Zyklus-Amplitude-Verlauf</h3>
+                <div class="chart-wrapper">
+                    <canvas id="chart-adaptive-amplitude"></canvas>
+                </div>
+            </div>
+            ` : ''}
         `;
     }
 
@@ -211,6 +232,99 @@ export class Dashboard {
                         pointRadius: 4,
                         tension: 0.4,
                         fill: true,
+                    }],
+                },
+                options: chartDefaults,
+            });
+        }
+    }
+
+    _buildAdaptiveCharts(sessions) {
+        if (!sessions || sessions.length === 0) return;
+        if (typeof Chart === 'undefined') return;
+
+        const chartDefaults = {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: '#162540',
+                    titleColor: '#e8f0fe',
+                    bodyColor: '#7a9bc0',
+                    borderColor: '#00d4ff22',
+                    borderWidth: 1,
+                },
+            },
+            scales: {
+                x: {
+                    grid: { color: 'rgba(0,212,255,0.05)' },
+                    ticks: { color: '#7a9bc0', font: { size: 11 } },
+                },
+                y: {
+                    grid: { color: 'rgba(0,212,255,0.05)' },
+                    ticks: { color: '#7a9bc0', font: { size: 11 } },
+                },
+            },
+        };
+
+        const reversed = [...sessions].reverse();
+        const labels = reversed.map(s =>
+            new Date(s.date).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' })
+        );
+
+        // RMSSD-Chart
+        const rmssdCanvas = document.getElementById('chart-adaptive-rmssd');
+        if (rmssdCanvas) {
+            if (this.charts.adaptiveRmssd) this.charts.adaptiveRmssd.destroy();
+            this.charts.adaptiveRmssd = new Chart(rmssdCanvas, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [{
+                        data: reversed.map(s => s.avgRMSSD || 0),
+                        borderColor: '#00e5a0',
+                        backgroundColor: 'rgba(0,229,160,0.08)',
+                        pointBackgroundColor: '#00e5a0',
+                        pointRadius: 4,
+                        tension: 0.4,
+                        fill: true,
+                    }, {
+                        data: reversed.map(s => s.peakRMSSD || 0),
+                        borderColor: 'rgba(201,168,76,0.6)',
+                        backgroundColor: 'transparent',
+                        pointRadius: 3,
+                        tension: 0.4,
+                        borderDash: [4, 4],
+                    }],
+                },
+                options: chartDefaults,
+            });
+        }
+
+        // Zyklus-Amplitude-Chart
+        const ampCanvas = document.getElementById('chart-adaptive-amplitude');
+        if (ampCanvas) {
+            if (this.charts.adaptiveAmplitude) this.charts.adaptiveAmplitude.destroy();
+            this.charts.adaptiveAmplitude = new Chart(ampCanvas, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [{
+                        data: reversed.map(s => s.avgAmplitude || 0),
+                        borderColor: '#00d4ff',
+                        backgroundColor: 'rgba(0,212,255,0.08)',
+                        pointBackgroundColor: '#00d4ff',
+                        pointRadius: 4,
+                        tension: 0.4,
+                        fill: true,
+                    }, {
+                        data: reversed.map(s => s.peakAmplitude || 0),
+                        borderColor: 'rgba(201,168,76,0.6)',
+                        backgroundColor: 'transparent',
+                        pointRadius: 3,
+                        tension: 0.4,
+                        borderDash: [4, 4],
                     }],
                 },
                 options: chartDefaults,

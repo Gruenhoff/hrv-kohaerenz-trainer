@@ -69,6 +69,11 @@ export class AdaptiveTraining {
         this._amplitudeHistory = [];
         this._pending = Object.fromEntries(PHASES.map(p => [p, null])); // { prevValue, amplitudeBefore }
 
+        // Session-weite Logs für den Abschluss-Score (getrennt vom Rolling-Fenster
+        // _amplitudeHistory, das nur dem Sicherheitsnetz der Regelschleife dient)
+        this._rmssdLog = [];
+        this._amplitudeLog = [];
+
         this._summary = {
             adjustments: Object.fromEntries(PHASES.map(p => [p, { lengthen: 0, shorten: 0, revert: 0 }])),
             speechCues: 0,
@@ -113,6 +118,13 @@ export class AdaptiveTraining {
             reject(new CancelledError());
         }
 
+        this._summary.avgRMSSD = this._rmssdLog.length
+            ? Math.round(this._rmssdLog.reduce((a, b) => a + b, 0) / this._rmssdLog.length) : 0;
+        this._summary.peakRMSSD = this._rmssdLog.length ? Math.round(Math.max(...this._rmssdLog)) : 0;
+        this._summary.avgAmplitude = this._amplitudeLog.length
+            ? Math.round(this._amplitudeLog.reduce((a, b) => a + b, 0) / this._amplitudeLog.length) : 0;
+        this._summary.peakAmplitude = this._amplitudeLog.length ? Math.round(Math.max(...this._amplitudeLog)) : 0;
+
         const result = { rhythm: this.rhythm, ...this._summary };
         await this.db.saveAdaptiveTrainingSession(result).catch(() => {});
         this.onComplete?.(result);
@@ -130,6 +142,11 @@ export class AdaptiveTraining {
     /** Von app.js bei jedem rohen EKG-Sample aufzurufen (PMD-Stream) */
     addEcgSample(uv, tsMs) {
         this.rPeakDetector.addSample(uv, tsMs);
+    }
+
+    /** Von app.js bei jedem akzeptierten RR-Intervall aufzurufen (für den Abschluss-Score) */
+    logRmssd(rmssd) {
+        if (this._active) this._rmssdLog.push(rmssd);
     }
 
     _nextPhaseEvent() {
@@ -192,6 +209,7 @@ export class AdaptiveTraining {
         const fallingDir = this.hrv.hrDirectionBefore(fallingEnd, DIRECTION_WINDOW_MS, risingEnd);
 
         const amplitude = this.hrv.cycleAmplitude(inhaleStart, inhaleEndTs, fallingEnd);
+        if (amplitude !== null && amplitude > 0) this._amplitudeLog.push(amplitude);
         let edrRange = this.edrBuffer.amplitudeRangeInWindow(inhaleStart, fallingEnd);
         if (!this._edrLooksReliable(inhaleStart, fallingEnd)) edrRange = null;
 

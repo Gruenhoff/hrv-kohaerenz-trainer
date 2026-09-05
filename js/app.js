@@ -328,6 +328,10 @@ class App {
                     this.session.rmssdLog.push(rmssd);
                 }
             }
+
+            if (accepted && this.adaptiveTest?.active) {
+                this.adaptiveTest.logRmssd(this.hrv.rmssd());
+            }
         };
 
         this.ble.onHeartRate = (bpm) => {
@@ -718,7 +722,11 @@ class App {
             ].filter(Boolean).join(' / ');
 
             const phaseLabel = { inhale: 'Einatmen', holdIn: 'Halt-Ein', exhale: 'Ausatmen', holdOut: 'Halt-Aus' };
-            const rows = [['Ergebnis-Rhythmus', rhythmStr]];
+            const rows = [
+                ['Ergebnis-Rhythmus', rhythmStr],
+                ['Ø RMSSD', `${summary.avgRMSSD} ms (Spitze ${summary.peakRMSSD} ms)`],
+                ['Ø Zyklus-Amplitude', `${summary.avgAmplitude} bpm (Spitze ${summary.peakAmplitude} bpm)`],
+            ];
             for (const phase of ['inhale', 'holdIn', 'exhale', 'holdOut']) {
                 const a = summary.adjustments[phase];
                 if (!a || (a.lengthen === 0 && a.shorten === 0 && a.revert === 0)) continue; // ungenutzte Phase ausblenden
