@@ -22,6 +22,14 @@ const RESAMPLE_RATE = 4;
 
 // Mindestbreite des Fensters für hrDirectionBefore(), sonst zu verrauscht/unzuverlässig
 const MIN_DIRECTION_WINDOW_MS = 1000;
+// Mindestzahl Schläge je Teilfenster — Fensterbreite allein garantiert keine Datenmenge
+const MIN_BEATS_PER_HALF = 2;
+// Mindestzahl Schläge für eine belastbare Steigungs-Regression bzw. Scheitel-Interpolation
+const MIN_BEATS_FOR_SLOPE = 3;
+
+function clampNumber(v, min, max) {
+    return Math.max(min, Math.min(max, v));
+}
 
 export class HRVAnalyzer {
     constructor() {
@@ -38,9 +46,12 @@ export class HRVAnalyzer {
     /**
      * Neues RR-Intervall hinzufügen
      * @param {number} rr - RR-Intervall in Millisekunden
+     * @param {number} [beatTsMs] - rekonstruierte Schlagzeit auf der performance.now()-
+     *   Achse (aus PolarBluetooth._reconstructBeatTimes). Ohne Angabe wird die aktuelle
+     *   Zeit genommen — dann sind zyklus-ausgerichtete Auswertungen entsprechend ungenauer.
      * @returns {boolean} true wenn Wert akzeptiert (kein Artefakt)
      */
-    addRR(rr) {
+    addRR(rr, beatTsMs) {
         // Artefakt-Filter
         if (rr < MIN_RR || rr > MAX_RR) return false;
 
@@ -57,7 +68,7 @@ export class HRVAnalyzer {
 
         this.rrBuffer.push(rr);
         this.rrTimestamps.push(timestamp);
-        this.rrWallTimestamps.push(performance.now());
+        this.rrWallTimestamps.push(Number.isFinite(beatTsMs) ? beatTsMs : performance.now());
 
         // Fenster begrenzen
         const windowMs = this.windowSizeSeconds * 1000;
@@ -170,6 +181,102 @@ export class HRVAnalyzer {
         return n ? sum / n : null;
     }
 
+    /** Anzahl Schläge im gegebenen performance.now()-Zeitfenster */
+    beatCountInWindow(startMs, endMs) {
+        let n = 0;
+        for (let i = 0; i < this.rrWallTimestamps.length; i++) {
+            const t = this.rrWallTimestamps[i];
+            if (t >= startMs && t <= endMs && this.rrBuffer[i] > 0) n++;
+        }
+        return n;
+    }
+
+    /**
+     * Steigung der Herzfrequenz im Zeitfenster (bpm pro Sekunde), per
+     * Kleinste-Quadrate-Regression über alle Schläge im Fenster.
+     *
+     * Das ist das Reaktivitäts-Maß der vagalen Bremse: die Zyklus-Amplitude sagt,
+     * wie TIEF die Bremse greift, die Steigung sagt, wie SCHNELL sie greift und
+     * löst. Zwei Zyklen mit gleicher Amplitude können sich hier deutlich
+     * unterscheiden — ein träger Sinus gegen einen schnellen, klaren Wechsel.
+     *
+     * Regression statt Schlag-zu-Schlag-Differenz, weil pro Segment nur wenige
+     * Schläge vorliegen und Einzeldifferenzen zu stark rauschen.
+     *
+     * @returns {number|null} bpm/s (positiv = HF steigt), oder null bei zu wenig Daten
+     */
+    hrSlopeInWindow(startMs, endMs) {
+        const xs = [], ys = [];
+        for (let i = 0; i < this.rrWallTimestamps.length; i++) {
+            const t = this.rrWallTimestamps[i];
+            if (t < startMs || t > endMs) continue;
+            const rr = this.rrBuffer[i];
+            if (rr <= 0) continue;
+            xs.push((t - startMs) / 1000); // Sekunden
+            ys.push(60000 / rr);
+        }
+        if (xs.length < MIN_BEATS_FOR_SLOPE) return null;
+
+        const n = xs.length;
+        const mx = xs.reduce((a, b) => a + b, 0) / n;
+        const my = ys.reduce((a, b) => a + b, 0) / n;
+        let num = 0, den = 0;
+        for (let i = 0; i < n; i++) {
+            const dx = xs[i] - mx;
+            num += dx * (ys[i] - my);
+            den += dx * dx;
+        }
+        if (den <= 0) return null; // alle Schläge auf demselben Zeitpunkt
+        return num / den;
+    }
+
+    /**
+     * Zeitpunkt des HF-Maximums bzw. -Minimums im Fenster, per Parabel durch den
+     * Extremschlag und seine beiden Nachbarn interpoliert.
+     *
+     * Ohne Interpolation wäre die Auflösung ein ganzes RR-Intervall (bei 60 bpm also
+     * eine Sekunde) — viel zu grob, um daraus eine Phasenkorrektur abzuleiten. Die
+     * Parabel nutzt die Krümmung der Nachbarschaft und trifft den Scheitel deutlich
+     * genauer als der höchste Einzelschlag.
+     *
+     * Liegt der Extremwert am Fensterrand, kann nicht interpoliert werden — dann
+     * wird der Randzeitpunkt zurückgegeben. Das UNTERschätzt die wahre Abweichung
+     * (der Scheitel liegt dann außerhalb des Fensters) und ist damit die
+     * konservative Richtung.
+     *
+     * @param {'max'|'min'} kind
+     * @returns {number|null} Zeitpunkt auf der performance.now()-Achse, oder null
+     */
+    hrExtremumTime(startMs, endMs, kind = 'max') {
+        const ts = [], hrs = [];
+        for (let i = 0; i < this.rrWallTimestamps.length; i++) {
+            const t = this.rrWallTimestamps[i];
+            if (t < startMs || t > endMs) continue;
+            const rr = this.rrBuffer[i];
+            if (rr <= 0) continue;
+            ts.push(t);
+            hrs.push(60000 / rr);
+        }
+        if (ts.length < MIN_BEATS_FOR_SLOPE) return null; // zu wenig Kurve für eine Aussage
+
+        let best = 0;
+        for (let i = 1; i < hrs.length; i++) {
+            if (kind === 'max' ? hrs[i] > hrs[best] : hrs[i] < hrs[best]) best = i;
+        }
+        if (best === 0 || best === ts.length - 1) return ts[best]; // Rand → nicht interpolierbar
+
+        const [x0, x1, x2] = [ts[best - 1], ts[best], ts[best + 1]];
+        const [y0, y1, y2] = [hrs[best - 1], hrs[best], hrs[best + 1]];
+        const s01 = (y1 - y0) / (x1 - x0);
+        const s12 = (y2 - y1) / (x2 - x1);
+        const a = (s12 - s01) / (x2 - x0);
+        if (!Number.isFinite(a) || a === 0) return x1;
+        const b = s01 - a * (x0 + x1);
+        const vertex = -b / (2 * a);
+        if (!Number.isFinite(vertex)) return x1;
+        return clampNumber(vertex, x0, x2); // entarteter Fit darf nicht davonfliegen
+    }
+
     /**
      * Richtung der HF unmittelbar vor einem Zeitpunkt (z.B. Segment-Ende): vergleicht
      * die mittlere HF in zwei benachbarten Teilfenstern direkt davor. Das Fenster wird
@@ -187,10 +294,29 @@ export class HRVAnalyzer {
         if (available < MIN_DIRECTION_WINDOW_MS) return null; // zu wenig verlässliche Daten im Segment
 
         const half = windowStart + available / 2;
-        const earlyMean = this.meanHRInWindow(windowStart, half);
-        const lateMean  = this.meanHRInWindow(half, atMs);
-        if (earlyMean === null || lateMean === null) return null;
-        const diff = lateMean - earlyMean;
+
+        // Einmalige Zuordnung jedes Schlags zu genau EINER Hälfte ([start, half) und
+        // [half, at]). Über meanHRInWindow gerechnet würde ein Schlag exakt auf der
+        // Trennlinie in beide Mittelwerte eingehen und den Unterschied künstlich
+        // verkleinern — bei nur wenigen Schlägen je Hälfte fällt das ins Gewicht.
+        let earlySum = 0, earlyN = 0, lateSum = 0, lateN = 0;
+        for (let i = 0; i < this.rrWallTimestamps.length; i++) {
+            const t = this.rrWallTimestamps[i];
+            if (t < windowStart || t > atMs) continue;
+            const rr = this.rrBuffer[i];
+            if (rr <= 0) continue;
+            const hr = 60000 / rr;
+            if (t < half) { earlySum += hr; earlyN++; }
+            else          { lateSum  += hr; lateN++;  }
+        }
+
+        // Fensterbreite allein garantiert keine Datenmenge: bei ~60 bpm liegen in
+        // 1,5 s nur ein bis zwei Schläge. Ein Vergleich "ein Schlag gegen einen
+        // Schlag" gegen eine 0,3-bpm-Schwelle wäre reines Rauschen und würde die
+        // Regelschleife zufällig hin- und herschieben. Lieber keine Richtung melden.
+        if (earlyN < MIN_BEATS_PER_HALF || lateN < MIN_BEATS_PER_HALF) return null;
+
+        const diff = (lateSum / lateN) - (earlySum / earlyN);
         if (Math.abs(diff) < 0.3) return 'flat'; // < 0,3 bpm Unterschied gilt als Wendepunkt erreicht
         return diff > 0 ? 'rising' : 'falling';
     }

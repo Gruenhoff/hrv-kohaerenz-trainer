@@ -19,6 +19,11 @@ const PMD_ECG_START_CMD = new Uint8Array([0x02, 0x00, 0x00, 0x01, 0x82, 0x00, 0x
 const PMD_ECG_STOP_CMD  = new Uint8Array([0x03, 0x00]);
 const ECG_SAMPLE_RATE_HZ = 130;
 
+// Wie weit die rekonstruierte Schlag-Kette hinter der Empfangszeit zurückliegen darf,
+// bevor sie als abgerissen gilt und neu verankert wird (deckt eine verpasste
+// Notification plus Jitter ab).
+const BEAT_CHAIN_TOLERANCE_MS = 2000;
+
 export class PolarBluetooth {
     constructor() {
         this.device = null;
@@ -33,6 +38,10 @@ export class PolarBluetooth {
         // (unbeaufsichtigte Mehrstunden-Aufnahme, kein Mensch der eingreifen könnte)
         this.persistentReconnect = false;
         this._persistentDelays = [2000, 5000, 10000, 30000];
+
+        // Rekonstruierte Schlagzeit des zuletzt empfangenen RR-Intervalls
+        // (siehe _reconstructBeatTimes) — bei Verbindungsabbruch verworfen.
+        this._lastBeatTs = null;
 
         // PMD/EKG (optional, für Adaptives Training)
         this.pmdControlChar   = null;
@@ -159,14 +168,51 @@ export class PolarBluetooth {
 
         // RR-Intervalle auslesen (können mehrere pro Notification sein)
         if (rrPresent) {
+            const rrList = [];
             while (offset + 1 < data.byteLength) {
                 const rrRaw = data.getUint16(offset, true);
                 offset += 2;
                 // Umrechnung: 1/1024 Sekunden → Millisekunden
-                const rrMs = Math.round(rrRaw * (1000 / 1024));
-                if (this.onRRInterval) this.onRRInterval(rrMs);
+                rrList.push(Math.round(rrRaw * (1000 / 1024)));
+            }
+            const timestamps = this._reconstructBeatTimes(rrList, performance.now());
+            for (let i = 0; i < rrList.length; i++) {
+                if (this.onRRInterval) this.onRRInterval(rrList[i], timestamps[i]);
             }
         }
+    }
+
+    /**
+     * Schlagzeitpunkte aus den RR-Intervallen rekonstruieren.
+     *
+     * Der Empfangszeitpunkt der Notification taugt nicht als Schlagzeit: der H10
+     * sendet ~1×/s und packt dabei teils mehrere RR-Intervalle in EIN Paket —
+     * die bekämen sonst alle denselben Zeitstempel, obwohl sie ~1 s auseinander
+     * liegende Schläge beschreiben. Für Wendepunkt- und Steigungsanalyse (die auf
+     * die Phasengrenze ausgerichtet sind) ist das fatal.
+     *
+     * RR-Intervalle kacheln die Zeitachse lückenlos, also wird die Kette am
+     * letzten bekannten Schlag fortgesetzt und nur bei Lücken/Neustart am
+     * Paketende neu verankert. Ergebnis liegt nie in der Zukunft.
+     */
+    _reconstructBeatTimes(rrList, nowMs) {
+        const total = rrList.reduce((a, b) => a + b, 0);
+        const chainEnd = this._lastBeatTs === null ? null : this._lastBeatTs + total;
+
+        // Nur fortsetzen, wenn die Kette auch WIRKLICH bis kurz vor jetzt reicht.
+        // Ohne diese Toleranzprüfung würde nach einer Übertragungslücke munter an
+        // einem längst veralteten Stand weitergezählt — die Schläge bekämen dann
+        // Zeitstempel weit in der Vergangenheit und fielen in die falsche Atemphase.
+        const canChain = chainEnd !== null
+            && chainEnd <= nowMs
+            && (nowMs - chainEnd) <= BEAT_CHAIN_TOLERANCE_MS;
+
+        let t = canChain ? this._lastBeatTs : nowMs - total;
+
+        const out = [];
+        for (const rr of rrList) { t += rr; out.push(t); }
+        this._lastBeatTs = out.length ? out[out.length - 1] : this._lastBeatTs;
+        return out;
     }
 
     /**
@@ -254,6 +300,8 @@ export class PolarBluetooth {
     async _handleDisconnect() {
         this.isConnected = false;
         this.ecgStreaming = false;
+        this._lastBeatTs = null; // Schlag-Kette ist unterbrochen → neu verankern
+
         this.pmdControlChar = null; // GATT-Objekte ungültig nach Abbruch
         this.pmdDataChar    = null;
         this._setStatus('Verbindung getrennt');

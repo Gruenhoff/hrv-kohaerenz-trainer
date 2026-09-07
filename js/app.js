@@ -11,7 +11,7 @@ import { BreathPacer }    from './breathpacer.js';
 import { HRSonification } from './audio.js';
 import { Dashboard }      from './dashboard.js';
 import { Zone2 }          from './zone2.js';
-import { FrequencyTest, RhythmTest, DailyCheck, rhythmToString } from './resonanz.js';
+import { FrequencyTest, RhythmTest, rhythmToString } from './resonanz.js';
 import { NightRecording } from './nightRecording.js';
 import { AdaptiveTraining } from './adaptiveTraining.js';
 import { SpeechCoach } from './speech.js';
@@ -66,7 +66,7 @@ class App {
         this.hrv        = new HRVAnalyzer();
         this.audio      = new HRSonification();
         this.zone2         = null;   // wird nach db.open() initialisiert
-        this._calibTest     = null;  // laufendes FrequencyTest/RhythmTest/DailyCheck
+        this._calibTest     = null;  // laufendes FrequencyTest/RhythmTest
         this._calibTicker   = null;
         this._calibFullChain = false;
         this.dashboard     = null;
@@ -305,14 +305,14 @@ class App {
     }
 
     _setupBluetooth() {
-        this.ble.onRRInterval = (rrMs) => {
+        this.ble.onRRInterval = (rrMs, beatTsMs) => {
             // Zone-2-Puffer immer befüllen (auch außerhalb der Session)
             if (this.zone2) this.zone2.addRR(rrMs);
 
             // Nacht-Aufnahme unabhängig vom Live-HRV-Puffer befüllen
             if (this.night.active) this.night.addRR(rrMs);
 
-            const accepted = this.hrv.addRR(rrMs);
+            const accepted = this.hrv.addRR(rrMs, beatTsMs);
             if (accepted && this.session.active) {
                 // Visualizer updaten
                 if (this.visualizer)    this.visualizer.addRR(rrMs);
@@ -597,9 +597,9 @@ class App {
             return;
         }
 
-        // Re-Entrancy-Sperre: _runDailyCheck() kann bis zu 5 Min dauern — ohne Sperre
-        // würde ein zweiter Klick eine zweite AdaptiveTraining-Instanz erzeugen, die
-        // sich den BreathPacer streitig macht, während die erste für immer hängen bleibt.
+        // Re-Entrancy-Sperre: das Aktivieren des EKG-Streams ist asynchron — ohne
+        // Sperre würde ein zweiter Klick eine zweite AdaptiveTraining-Instanz erzeugen,
+        // die sich den BreathPacer streitig macht, während die erste für immer hängt.
         const startBtn = document.getElementById('adaptive-start-btn');
         if (startBtn) {
             if (startBtn.disabled) return;
@@ -607,14 +607,6 @@ class App {
         }
 
         this.audio.unlock();
-
-        // Tagesaktuelle Frequenz sicherstellen — derselbe DailyCheck wie im Kohärenz-Training.
-        // #p1cal-screen liegt innerhalb von #view-training, #adaptive-screen als fixiertes
-        // Overlay DARÜBER — kurz ausblenden, sonst wäre der DailyCheck unsichtbar dahinter.
-        const screen = document.getElementById('adaptive-screen');
-        if (screen) screen.style.display = 'none';
-        await this._runDailyCheck();
-        if (screen) screen.style.display = '';
 
         // EKG/PMD-Stream für die EDR-Atemtiefe aktivieren (best effort — läuft ohne weiter,
         // nur die Atemtiefe-Sprachhinweise entfallen dann, siehe AdaptiveTraining._checkEdrFeedback)
@@ -656,7 +648,7 @@ class App {
         }
 
         const statusLabel = document.getElementById('adaptive-status-label');
-        if (statusLabel) statusLabel.textContent = 'Kalibrierung läuft…';
+        if (statusLabel) statusLabel.textContent = 'Einschwingen…';
 
         this._adaptiveShowSection('adaptive-active');
         this._adaptiveStartTicker();
@@ -721,16 +713,29 @@ class App {
                 r.holdOut ? `${fmt(r.holdOut)} halten` : null,
             ].filter(Boolean).join(' / ');
 
-            const phaseLabel = { inhale: 'Einatmen', holdIn: 'Halt-Ein', exhale: 'Ausatmen', holdOut: 'Halt-Aus' };
+            const signed = ms => `${ms >= 0 ? '+' : '−'}${(Math.abs(ms) / 1000).toFixed(1)} s`;
+            const shift = summary.segmentShift ?? { rising: 0, falling: 0 };
+
             const rows = [
-                ['Ergebnis-Rhythmus', rhythmStr],
+                ['Ergebnis-Rhythmus', `${rhythmStr}${summary.finalBreathsPerMin ? ` · ${summary.finalBreathsPerMin}/min` : ''}`],
+            ];
+            if (summary.startBreathsPerMin && summary.startBreathsPerMin !== summary.finalBreathsPerMin) {
+                rows.push(['Frequenz heute', `${summary.startBreathsPerMin}/min → ${summary.finalBreathsPerMin}/min`]);
+            }
+            rows.push(
+                ['Einatem-Segment', signed(shift.rising)],
+                ['Ausatem-Segment', signed(shift.falling)],
                 ['Ø RMSSD', `${summary.avgRMSSD} ms (Spitze ${summary.peakRMSSD} ms)`],
                 ['Ø Zyklus-Amplitude', `${summary.avgAmplitude} bpm (Spitze ${summary.peakAmplitude} bpm)`],
-            ];
-            for (const phase of ['inhale', 'holdIn', 'exhale', 'holdOut']) {
-                const a = summary.adjustments[phase];
-                if (!a || (a.lengthen === 0 && a.shorten === 0 && a.revert === 0)) continue; // ungenutzte Phase ausblenden
-                rows.push([phaseLabel[phase], `${a.lengthen}× verlängert · ${a.shorten}× verkürzt · ${a.revert}× zurückgenommen`]);
+                ['Ø Reaktivität', `${summary.avgReactivity ?? 0} bpm/s (Spitze ${summary.peakReactivity ?? 0} bpm/s)`],
+            );
+            if (summary.avgReactivityIndex) {
+                rows.push(['Reaktivitäts-Index', `${summary.avgReactivityIndex} bpm/s bei normaler Atemtiefe`]);
+            }
+            if (summary.bandLimited) {
+                // Klebt der Rhythmus am Bandrand, war die Tagesabweichung größer als ±1/min
+                // angenommen — oder die Messung stimmt nicht. Beides sollte sichtbar sein.
+                rows.push(['Hinweis', `${summary.bandLimited}× an der Frequenzgrenze gedeckelt`]);
             }
             rows.push(['Sprach-Hinweise', `${summary.speechCues}×`]);
             rows.push(['Beobachtete Zyklen', `${summary.cyclesObserved}`]);
@@ -1077,99 +1082,6 @@ class App {
     }
 
     /**
-     * Protokoll 3 — 5-Minuten-Check vor der Session: prüft, ob die gespeicherte
-     * Resonanzfrequenz heute abweicht (5 Kandidaten ±1,0 bpm, zyklus-ausgerichtete
-     * HRmax−HRmin-Messung), und blendet eine Abweichung gedämpft ein. Läuft nur
-     * einmal pro Tag (außer this._forceDailyCheck ist gesetzt). Resolvet wenn
-     * fertig oder übersprungen.
-     */
-    async _runDailyCheck() {
-        const screen = document.getElementById('p1cal-screen');
-        if (!screen) return;
-
-        const forceRun = this._forceDailyCheck === true;
-        this._forceDailyCheck = false;
-
-        if (!forceRun) {
-            const already = await this.db.getTodaysDailyCheck();
-            if (already) return; // heute schon gelaufen — sofort weiter zur Session
-        }
-
-        // ── Setup ────────────────────────────────────────────────────────────
-        this.hrv.reset();
-        document.getElementById('session-setup').style.display = 'none';
-        screen.style.display = '';
-
-        const ring       = document.getElementById('p1cal-ring');
-        const countEl    = document.getElementById('p1cal-countdown');
-        const titleEl     = document.getElementById('p1cal-title');
-        const subtitleEl  = document.getElementById('p1cal-subtitle');
-        const freqEl      = document.getElementById('p1cal-freq');
-        const pacerWrap   = document.getElementById('p1cal-pacer-wrap');
-        const skipBtn     = document.getElementById('p1cal-skip-btn');
-        const circ        = 2 * Math.PI * 54;
-
-        this._p1calSetStep(0);
-        if (titleEl)    titleEl.textContent    = '5-Minuten-Check';
-        if (subtitleEl) subtitleEl.textContent = 'Prüft, ob deine Frequenz heute abweicht';
-        if (pacerWrap)  pacerWrap.style.display = 'none';
-        if (freqEl)     freqEl.style.display    = 'none';
-        if (countEl)    countEl.textContent     = '';
-        if (ring)       { ring.style.strokeDasharray = circ; ring.style.strokeDashoffset = circ; }
-
-        let skipped = false;
-        let resolveSkip;
-        const skipPromise = new Promise(r => { resolveSkip = r; });
-        if (skipBtn) skipBtn.onclick = () => { skipped = true; resolveSkip(); };
-
-        const storedRhythm = this.session.breathRhythm
-            ?? await this.db.getSetting('breathRhythm', { inhale: 5000, holdIn: 0, exhale: 5000, holdOut: 0 });
-
-        await Promise.race([new Promise(r => setTimeout(r, 1000)), skipPromise]);
-        if (skipped) { screen.style.display = 'none'; document.getElementById('session-setup').style.display = ''; return; }
-
-        this._p1calSetStep(1);
-        if (pacerWrap) pacerWrap.style.display = '';
-
-        const check = new DailyCheck(this.hrv, this.db, storedRhythm);
-
-        check.onRhythmChange = (rhythm) => this._calibSetPacer('p1cal-pacer-container', 'p1cal-breath-label', rhythm, check);
-        check.onCandidateStart = (idx, total, bpm) => {
-            if (titleEl)    titleEl.textContent    = `Kandidat ${idx + 1} / ${total}`;
-            if (subtitleEl) subtitleEl.textContent = 'Folge dem Atempunkt';
-            if (freqEl)     { freqEl.textContent = `${bpm.toFixed(2)} Atemz/min`; freqEl.style.display = ''; }
-            if (countEl)    countEl.textContent = `${idx + 1}/${total}`;
-            if (ring)       ring.style.strokeDashoffset = circ * (1 - idx / total);
-        };
-
-        const finished = new Promise(resolve => {
-            check.onComplete   = (winner) => resolve(winner);
-            check.onCancelled  = () => resolve(null);
-        });
-
-        check.start();
-        const winner = await Promise.race([finished, skipPromise.then(() => { check.stop(); return null; })]);
-        this._calibStopPacer();
-
-        if (!winner) { screen.style.display = 'none'; document.getElementById('session-setup').style.display = ''; return; }
-
-        this._p1calSetStep(2);
-        if (pacerWrap) pacerWrap.style.display = 'none';
-        if (freqEl)    freqEl.style.display    = 'none';
-
-        this.session.breathRhythm = winner.rhythm;
-
-        if (titleEl)    titleEl.textContent    = `Angepasst: ${winner.bpm.toFixed(2)} Atemz/min`;
-        if (subtitleEl) subtitleEl.textContent =
-            `${(winner.rhythm.inhale / 1000).toFixed(1)}s ein  ·  ${(winner.rhythm.exhale / 1000).toFixed(1)}s aus`;
-        if (countEl) countEl.textContent = '✓';
-        if (ring)    ring.style.strokeDashoffset = '0';
-
-        await new Promise(r => setTimeout(r, 1800));
-        screen.style.display = 'none';
-    }
-
-    /**
      * Gemeinsamer BreathPacer-Helfer für die Kalibrierungs-Protokolle:
      * startet einen neuen Pacer mit gegebenem Rhythmus und leitet dessen
      * Phasenwechsel an den laufenden Test (CalibrationTestBase) weiter.
@@ -1187,16 +1099,6 @@ class App {
 
     _calibStopPacer() {
         if (this.pacer) { this.pacer.stop(); this.pacer.destroy(); this.pacer = null; }
-    }
-
-    /** Schritt-Dots der Kalibrierungs-Screens aktualisieren (0=Start, 1=Scan, 2=Ergebnis) */
-    _p1calSetStep(step) {
-        for (let i = 0; i <= 2; i++) {
-            const dot = document.getElementById(`p1cal-dot-${i}`);
-            if (!dot) continue;
-            dot.classList.toggle('p1cal-active', i === step);
-            dot.classList.toggle('p1cal-done',   i < step);
-        }
     }
 
     /**
@@ -1293,14 +1195,12 @@ class App {
 
         this._setSessionPhase(phase);
 
-        if (phase === 1) {
-            // Phase 1: Protokoll-3-Check (5 Min, einmal pro Tag) → optimale Frequenz bestätigen/anpassen
-            await this._runDailyCheck();
-        } else {
-            // Andere Phasen: optionaler Body-Scan
-            if (this.bodyScanEnabled) await this._runBodyScan();
-            else this.hrv.reset();
-        }
+        // Alle Phasen gleich: optionaler Body-Scan als Vorbereitung.
+        // (Früher lief vor Phase 1 der 5-Minuten-Frequenz-Check — entfernt, weil er
+        // die Tagesabweichung nicht auflösen konnte und die Startwerte der
+        // Regelschleife verschob; die Frequenz kommt jetzt direkt aus Protokoll 1/2.)
+        if (this.bodyScanEnabled) await this._runBodyScan();
+        else this.hrv.reset();
 
         this.session.active          = true;
         this.session.startTime       = Date.now();
