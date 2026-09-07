@@ -59,6 +59,11 @@ const DEADZONE_RR_FRACTION = 0.5;
 // leicht schwankt — wandert die Schleife in einer Session weiter, ist das mit hoher
 // Wahrscheinlichkeit ein Messproblem. Verhältnis und Binnenaufteilung bleiben frei.
 const FREQ_BAND_BPM = 1.0;
+// Zusätzlich hart auf den Bereich geklemmt, den Protokoll 1 überhaupt absucht:
+// bei einer gemessenen Resonanz von z.B. 4,75/min reichte das reine ±1-Band sonst
+// bis 3,75/min hinunter — also in einen Bereich, der nie als Kandidat geprüft wurde.
+const ABS_MIN_BPM = 4.5;
+const ABS_MAX_BPM = 8.0;
 const MIN_INHALE_MS = 1500;  // absolute Atembarkeits-Untergrenzen
 const MIN_EXHALE_MS = 2000;
 
@@ -107,9 +112,11 @@ export class AdaptiveTraining {
         // Frequenzband um den Protokoll-1/2-Wert. Kürzerer Zyklus = höhere Frequenz,
         // deshalb liefert die obere bpm-Grenze die untere Zyklusgrenze.
         const baseBpm = 60000 / Math.max(1, cycleMs(baseRhythm));
+        const fastBpm = Math.min(baseBpm + FREQ_BAND_BPM, ABS_MAX_BPM);
+        const slowBpm = Math.max(baseBpm - FREQ_BAND_BPM, ABS_MIN_BPM);
         this._cycleBounds = [
-            60000 / (baseBpm + FREQ_BAND_BPM),
-            60000 / Math.max(0.5, baseBpm - FREQ_BAND_BPM),
+            60000 / Math.max(fastBpm, baseBpm), // nie enger als der Startwert selbst
+            60000 / Math.min(slowBpm, baseBpm),
         ];
 
         this._active = false;

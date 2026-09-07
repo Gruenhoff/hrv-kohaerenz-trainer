@@ -315,6 +315,10 @@ export class FrequencyTest extends CalibrationTestBase {
             await Promise.all([
                 this.db.setSetting('resonanceFreq', this.hrv.resonanceFreq),
                 this.db.setSetting('breathRhythm', winner.rhythm),
+                // Eigener Schlüssel, den NUR die Protokolle schreiben. 'breathRhythm'
+                // wird auch von der Atemmuster-Auswahl des Kohärenz-Trainings
+                // überschrieben und taugt deshalb nicht als Quelle der Resonanz.
+                this.db.setSetting('resonanceRhythm', winner.rhythm),
             ]).catch(() => {});
 
             this._active = false;
@@ -437,7 +441,10 @@ export class RhythmTest extends CalibrationTestBase {
 
             await this.db.saveRhythmTest(result).catch(() => {});
             const finalRhythm = { inhale: winner.inhale, holdIn: winner.holdIn, exhale: winner.exhale, holdOut: winner.holdOut };
-            await this.db.setSetting('breathRhythm', finalRhythm).catch(() => {});
+            await Promise.all([
+                this.db.setSetting('breathRhythm', finalRhythm),
+                this.db.setSetting('resonanceRhythm', finalRhythm), // siehe Protokoll 1
+            ]).catch(() => {});
 
             this._active = false;
             this.onComplete?.(winner, result);

@@ -615,7 +615,7 @@ class App {
             this._showToast('EKG-Stream nicht verfügbar – Atemtiefe-Hinweise entfallen, Live-Anpassung läuft trotzdem.');
         }
 
-        const baseRhythm = { ...this.session.breathRhythm };
+        const baseRhythm = await this._resolveResonanceRhythm();
         const test = new AdaptiveTraining(this.hrv, this.db, baseRhythm);
         this.adaptiveTest = test;
 
@@ -676,6 +676,44 @@ class App {
         this._adaptiveShowSection('adaptive-setup');
         const startBtn = document.getElementById('adaptive-start-btn');
         if (startBtn) startBtn.disabled = false;
+    }
+
+    /**
+     * Startrhythmus fürs Adaptive Training: das Ergebnis von Protokoll 1/2.
+     *
+     * Bewusst NICHT über 'breathRhythm' — dieser Schlüssel dient im Kohärenz-Training
+     * auch der Atemmuster-Auswahl und wird von ihr überschrieben (und am Ende jeder
+     * Session erneut festgeschrieben). Wer dort einmal "Kohärent 5-5" wählt, hat seine
+     * gemessene Resonanz still verloren; das Adaptive Training startete dann beim
+     * Atemmuster statt bei der Resonanz.
+     *
+     * Für Bestandsdaten wird der Wert einmalig aus den gespeicherten Protokoll-
+     * Ergebnissen zurückgeholt, damit niemand die Protokolle neu laufen lassen muss.
+     */
+    async _resolveResonanceRhythm() {
+        const stored = await this.db.getSetting('resonanceRhythm', null);
+        if (stored && stored.inhale > 0) return { ...stored };
+
+        // Protokoll 2 (Verhältnis/Pausen) hat Vorrang vor Protokoll 1 (nur Frequenz)
+        const [rhythmTest] = await this.db.getRhythmTests(1).catch(() => []);
+        const w = rhythmTest?.winner;
+        if (w && w.inhale > 0) {
+            const recovered = { inhale: w.inhale, holdIn: w.holdIn || 0, exhale: w.exhale, holdOut: w.holdOut || 0 };
+            await this.db.setSetting('resonanceRhythm', recovered).catch(() => {});
+            return recovered;
+        }
+
+        const [freqTest] = await this.db.getFrequencyTests(1).catch(() => []);
+        const fr = freqTest?.winner?.rhythm;
+        if (fr && fr.inhale > 0) {
+            const recovered = { ...fr };
+            await this.db.setSetting('resonanceRhythm', recovered).catch(() => {});
+            return recovered;
+        }
+
+        // Nie kalibriert → notgedrungen der aktuelle Atemrhythmus
+        this._showToast('Noch keine Resonanz gemessen – Adaptives Training startet beim aktuellen Atemmuster.');
+        return { ...this.session.breathRhythm };
     }
 
     _adaptiveStartTicker() {
@@ -2298,6 +2336,8 @@ class App {
             applyBtn.onclick = async () => {
                 this.session.breathRhythm = rhythm;
                 await this.db.setSetting('breathRhythm', rhythm);
+                await this.db.setSetting('resonanceRhythm', rhythm); // eigener Schlüssel, siehe _resolveResonanceRhythm
+
                 this._updateBreathPreview();
                 this._showToast('Atemrhythmus übernommen!');
                 this._navigateTo('training');
