@@ -13,6 +13,12 @@
  * jeder Rhythmus-Änderung (Adaptives Training) schon im nächsten Atemzug.
  * Den "Halt nach Ausatmen" liefert die Wartezeit zwischen zwei Sessions.
  *
+ * Während einer laufenden Session sendet das Moonbird ~20 Sensor-Notifications
+ * pro Sekunde (91 Byte). Auf dem Handy verstopft das die Funkstrecke: Antworten
+ * und das Ende-Ereignis kommen um Sekunden verspätet. Deshalb werden die
+ * Benachrichtigungen (CCCD) direkt nach dem Start abgeschaltet und erst kurz vor
+ * dem vorhergesagten Ende wieder eingeschaltet (Ende-Ereignis F1 geht sonst verloren).
+ *
  * Protokoll reverse-engineert (Sniffer + Test vom PC aus), siehe Notizen.
  */
 
@@ -35,6 +41,12 @@ const CMD_OVERHEAD_MS  = 300;         // Ende-Ereignis → Start: 2 Schreibvorg�
 const REQUEST_TIMEOUT_MS = 3000;
 const IDLE_WAIT_MS       = 15000;     // so lange auf das Ende einer laufenden Session warten
 const STALE_RUN_GRACE_MS = 3000;      // Toleranz, bevor ein verpasstes Ende-Ereignis abgefragt wird
+const GATE_LEAD_MS       = 600;       // Benachrichtigungen so lange vor dem vorhergesagten Ende wieder an
+const END_FALLBACK_MS    = 1200;      // so lange nach dem vorhergesagten Ende ohne F1 → Status abfragen
+const END_BIAS_MAX_MS    = 400;
+const OVERHEAD_MIN_MS    = 100;       // Lücke Ende-Ereignis → Start: selbstregelnd zwischen diesen Grenzen
+const OVERHEAD_MAX_MS    = 1500;
+const SLACK_MARGIN_MS    = 80;        // so viel Reserve zwischen "Programm bereit" und Einatem-Signal ist gewollt
 
 function rhythmKey(r) {
     return `${r.inhale}|${r.holdIn || 0}|${r.exhale}|${r.holdOut || 0}`;
@@ -67,6 +79,29 @@ export class MoonbirdController {
         // mit Sende-/Schreib-/Antwortzeit, Ende-Ereignisse, Entscheidungen. Zeiten: performance.now().
         this.trace = [];
         this._lastProgram = null;
+
+        // Stream-Trick: Benachrichtigungen während der Session aus (siehe Kopfkommentar).
+        // Abschaltbar, um vorher/nachher zu vergleichen (Diagnose).
+        this.gateStream = true;
+        this._notifyOn = false;
+        this._predEnd = 0;
+        this._endBias = 0;              // gemessene Abweichung Ende-Ereignis − Vorhersage (Median der letzten 5)
+        this._recentBias = [];
+        this._endTimer = null;
+        this._fallbackTimer = null;
+        this._overheadMs = CMD_OVERHEAD_MS;   // Zeit von Geräte-Ende bis Start des nächsten Atemzugs (wird nachgeführt)
+        this._lastDeficit = 0;
+        this._lastBudget = 0;
+        this._prevA = null;
+        this._prevBudget = null;
+        this._gapEma = null;
+        this._lastInhaleT = 0;
+        this._preparedAt = 0;
+        this._reprepared = false;
+        this._breathCount = 0;
+        this._streamCount = 0;
+        this._streamFirst = 0;
+        this._streamLast = 0;
 
         this._onNotifyBound = (e) => {
             const v = e.target.value;
@@ -109,6 +144,7 @@ export class MoonbirdController {
             this._notifyChar.addEventListener('characteristicvaluechanged', this._onNotifyBound);
             await this._notifyChar.startNotifications();
 
+            this._notifyOn = true;
             this.isConnected = true;
             this.onConnectionChange?.(true);
             return true;
@@ -149,6 +185,8 @@ export class MoonbirdController {
             w.reject(new Error('Moonbird getrennt'));
         }
         this._waiters.clear();
+        this._clearGate();
+        this._notifyOn = false;
         this._endListeners.splice(0).forEach(fn => fn(false));
         this._notifyChar?.removeEventListener('characteristicvaluechanged', this._onNotifyBound);
         this._notifyChar = null;
@@ -170,14 +208,20 @@ export class MoonbirdController {
         if (!bytes.length) return;
         bytes.tRecv = performance.now();
         const op = bytes[0];
-        if (op === EVT_SESSION_END) { this._trace('end'); this._onSessionEnd(); return; }
+        if (op === 0xf0) {   // Sensor-Datenstrom: nur mitzählen
+            if (!this._streamCount) this._streamFirst = bytes.tRecv;
+            this._streamCount++;
+            this._streamLast = bytes.tRecv;
+            return;
+        }
+        if (op === EVT_SESSION_END) { this._trace('end'); this._onSessionEnd(bytes.tRecv); return; }
         const w = this._waiters.get(op);
         if (w) {
             this._waiters.delete(op);
             clearTimeout(w.timer);
             w.resolve(bytes);
         }
-        // alles andere (Sensor-Datenstrom 0xF0, sonstige Blöcke) wird ignoriert
+        // alles andere (sonstige Blöcke) wird ignoriert
     }
 
     async _write(bytes) {
@@ -193,6 +237,8 @@ export class MoonbirdController {
         const rec = { op: bytes[0], tQueued: performance.now(), tSend: null, tWritten: null, tReply: null, reply: null, error: null };
         const run = async () => {
             if (!this.isConnected) throw new Error('Moonbird nicht verbunden');
+            // Ohne Benachrichtigungen käme keine Antwort — sicherheitshalber einschalten
+            if (!this._notifyOn) await this._applyNotify(true);
             const reply = new Promise((resolve, reject) => {
                 const timer = setTimeout(() => {
                     this._waiters.delete(replyOp);
@@ -213,14 +259,60 @@ export class MoonbirdController {
             return reply;
         };
         const finish = () => this.trace.push({ type: 'cmd', t: rec.tQueued, ...rec });
-        const p = this._chain.then(run, run);
+        const p = this._enqueue(run);
         p.then((reply) => {
             rec.tReply = reply.tRecv ?? performance.now();
             rec.reply = Array.from(reply.slice(0, 8), b => b.toString(16).padStart(2, '0')).join('');
             finish();
         }, (err) => { rec.error = err.message; finish(); });
+        return p;
+    }
+
+    /** GATT-Operationen nacheinander ausführen (Web Bluetooth erlaubt nur eine gleichzeitig). */
+    _enqueue(fn) {
+        const p = this._chain.then(fn, fn);
         this._chain = p.catch(() => {});
         return p;
+    }
+
+    /** Benachrichtigungen (CCCD) ein-/ausschalten; ausgeschaltet gibt es keinen Sensor-Datenstrom. */
+    setNotifications(on) {
+        return this._enqueue(() => this._applyNotify(on));
+    }
+
+    async _applyNotify(on) {
+        if (!this.isConnected || this._notifyOn === on || !this._notifyChar) return;
+        const t = performance.now();
+        if (on) await this._notifyChar.startNotifications();
+        else await this._notifyChar.stopNotifications();
+        this._notifyOn = on;
+        this._trace('notify', { on, ms: performance.now() - t });
+    }
+
+    get notificationsOn() { return this._notifyOn; }
+
+    /** Zähler des Sensor-Datenstroms (Notifications mit Opcode F0) für die Diagnose. */
+    resetStreamStats() { this._streamCount = 0; this._streamFirst = 0; this._streamLast = 0; }
+    get streamStats() {
+        const span = this._streamLast - this._streamFirst;
+        return { count: this._streamCount, ratePerS: span > 500 ? (this._streamCount - 1) / (span / 1000) : null };
+    }
+
+    /**
+     * Diagnose-Hilfe: nach einem erfolgreich gestarteten Atemzug Benachrichtigungen aus, kurz vor
+     * dem Ende wieder an und das Ende-Ereignis abwarten. Liefert { ended, tEnd, predEnd }.
+     */
+    async waitEndGated(startMid, breathMs, timeoutMs = 20000) {
+        const predEnd = startMid + breathMs;
+        await this.setNotifications(false);
+        const wait = predEnd - GATE_LEAD_MS - performance.now();
+        if (wait > 0) await new Promise(r => setTimeout(r, wait));
+        const ended = this._waitSessionEnd(timeoutMs);
+        await this.setNotifications(true);
+        const ok = await ended;
+        let tEnd = null;
+        for (let i = this.trace.length - 1; i >= 0; i--) if (this.trace[i].type === 'end') { tEnd = this.trace[i].t; break; }
+        return { ended: ok, tEnd, predEnd };
     }
 
     static _ok(reply) { return reply[1] === 0x01 && reply[2] === 0x00; }
@@ -255,6 +347,18 @@ export class MoonbirdController {
 
     static get constants() {
         return { MIN_SESSION_MS, END_MARGIN_MS, CMD_OVERHEAD_MS };
+    }
+
+    get overheadMs() { return this._overheadMs; }
+
+    /** Gelernte Lücke (Geräte-Ende → nächster Start) inkl. Reserve, oder null, solange noch nichts gelernt wurde. */
+    get learnedOverheadMs() { return this._gapEma == null ? null : Math.round(this._overheadMs); }
+
+    /** Früher gelernten Wert übernehmen, damit schon der erste Atemzug passend verkürzt wird. */
+    restoreOverhead(ms) {
+        if (!Number.isFinite(ms)) return;
+        this._overheadMs = Math.max(OVERHEAD_MIN_MS, Math.min(OVERHEAD_MAX_MS, ms));
+        this._gapEma = Math.max(0, this._overheadMs - SLACK_MARGIN_MS);
     }
 
     async _queryRunning() {
@@ -295,7 +399,9 @@ export class MoonbirdController {
         const holdOut = r.holdOut || 0;
         // Ist der Halt nach Ausatmen kürzer als die Befehlslaufzeit, verkürzt sich
         // die Ausatmung entsprechend, damit der Rhythmus über viele Zyklen nicht driftet.
-        const exhale = r.exhale - Math.max(0, CMD_OVERHEAD_MS - holdOut);
+        this._lastDeficit = Math.max(0, this._overheadMs - holdOut);
+        this._lastBudget = holdOut + this._lastDeficit;
+        const exhale = r.exhale - this._lastDeficit;
         const breath = r.inhale + (r.holdIn || 0) + exhale;
         const duration = breath - END_MARGIN_MS;
         if (duration < MIN_SESSION_MS) return null;
@@ -317,6 +423,7 @@ export class MoonbirdController {
         this.rhythm = { ...rhythm };
         this._trace('follow', { rhythm: { ...rhythm }, source });
         try {
+            await this.setNotifications(true);
             await this._ensureIdle();
             this.following = true;
             this.running = false;
@@ -340,6 +447,7 @@ export class MoonbirdController {
     /** Von app.js bei jedem Phasenwechsel des Pacers aufzurufen. */
     onPacerPhase(phase) {
         this._trace('pacer', { phase, following: this.following });
+        if (phase === 'inhale') this._lastInhaleT = performance.now();
         if (phase !== 'inhale' || !this.following) return;
         // Bewusst erst nach der aktuellen Verarbeitung: Das Adaptive Training ändert
         // den Rhythmus direkt nach dem Einatem-Signal — so startet der Atemzug
@@ -373,6 +481,7 @@ export class MoonbirdController {
                 throw new Error(`Programm abgelehnt (${Array.from(reply.slice(0, 3), b => b.toString(16).padStart(2, '0')).join(' ')})`);
             }
             this.prepared = key;
+            this._preparedAt = performance.now();
         } catch (err) {
             this._preparing = false;
             this._fail(err);
@@ -398,6 +507,7 @@ export class MoonbirdController {
         if (this.prepared !== rhythmKey(this.rhythm)) {
             // nichts vorbereitet oder der Rhythmus hat sich zwischenzeitlich geändert
             this._trace('decision', { what: this.prepared === null ? 'prepare-missing' : 'reprepare' });
+            this._reprepared = true;
             this._wantStart = true;
             this._prepare();
             return;
@@ -405,6 +515,7 @@ export class MoonbirdController {
 
         this._wantStart = false;
         this._starting = true;
+        this._adaptOverhead();
         try {
             const prog = this._lastProgram ? { ...this._lastProgram } : null;
             const reply = await this._request(START_CMD);
@@ -413,6 +524,7 @@ export class MoonbirdController {
                 this.prepared = null;
                 this._runStartedAt = Date.now();
                 this._trace('session', { prog, tReply: reply.tRecv });
+                this._afterStart(this._lastCmdSend(0x07), reply.tRecv);
             } else {
                 this._trace('decision', { what: 'start-rejected' });
                 this._wantStart = true; // vermutlich lief noch eine Session — nach deren Ende erneut versuchen
@@ -424,10 +536,97 @@ export class MoonbirdController {
         }
     }
 
-    _onSessionEnd() {
+    /**
+     * Schätzt die reale Lücke zwischen Geräte-Ende und Start des nächsten Atemzugs (Funkweg des Handys)
+     * und stellt danach die Kürzung der Ausatmung ein.
+     *
+     * A = Zeitpunkt "Programm bereit" relativ zum Einatem-Signal (>0: zu spät, <0: Reserve). Der Verzug
+     * ist ein Integrator der Fehlbeträge; deshalb wird NICHT auf den Verzug selbst geregelt (das schwingt),
+     * sondern die Lücke aus der Änderung von A geschätzt:
+     *     A_k = max(A_k-1, 0) + Lücke − Budget_k-1   →   Lücke = A_k − max(A_k-1, 0) + Budget_k-1
+     * Neues Budget = Lücke + kleine Reserve + der halbe aufgelaufene Rückstand (holt Verzug stetig auf).
+     * Rhythmuswechsel-Atemzüge (Neuvorbereitung) und der erste Atemzug gehen nicht in die Schätzung ein.
+     */
+    _adaptOverhead() {
+        const A = this._preparedAt - this._lastInhaleT;
+        const budget = this._lastBudget;
+        const prevA = this._prevA, prevBudget = this._prevBudget;
+        const skip = this._reprepared || this._breathCount === 0 || !this._lastInhaleT || prevA == null;
+        this._reprepared = false;
+        this._breathCount++;
+        this._prevA = A;
+        this._prevBudget = budget;
+        if (skip) return;
+
+        const gap = A - Math.max(prevA, 0) + prevBudget;
+        if (!Number.isFinite(gap) || gap < 0 || gap > 3000) return;      // unplausibel (z. B. Timer-Aussetzer)
+        this._gapEma = this._gapEma == null ? gap : 0.5 * this._gapEma + 0.5 * gap;
+        const before = this._overheadMs;
+        this._overheadMs = Math.max(OVERHEAD_MIN_MS, Math.min(OVERHEAD_MAX_MS, this._gapEma + SLACK_MARGIN_MS + 0.5 * Math.max(A, 0)));
+        this._trace('decision', { what: 'overhead', from: before, to: this._overheadMs, A, gap });
+    }
+
+    _onSessionEnd(tRecv = performance.now()) {
+        if (this._predEnd) {
+            // Vorhersage nachführen: wie spät kam das Ende-Ereignis gegenüber der Erwartung?
+            this._recentBias.push(Math.max(-END_BIAS_MAX_MS, Math.min(END_BIAS_MAX_MS, tRecv - this._predEnd)));
+            if (this._recentBias.length > 5) this._recentBias.shift();
+            const sorted = [...this._recentBias].sort((a, b) => a - b);
+            this._endBias = sorted[Math.floor(sorted.length / 2)];
+            this._trace('decision', { what: 'end-bias', bias: tRecv - this._predEnd });
+        }
+        this._clearGate();
         this.running = false;
         this._endListeners.splice(0).forEach(fn => fn(true));
         if (this.following) this._prepare();
+    }
+
+    // ─── Stream-Trick ────────────────────────────────────────────────────────
+
+    _lastCmdSend(op) {
+        for (let i = this.trace.length - 1; i >= 0; i--) {
+            const e = this.trace[i];
+            if (e.type === 'cmd' && e.op === op) return e.tSend;
+        }
+        return performance.now();
+    }
+
+    _clearGate() {
+        clearTimeout(this._endTimer);
+        clearTimeout(this._fallbackTimer);
+        this._endTimer = this._fallbackTimer = null;
+        this._predEnd = 0;
+    }
+
+    /** Nach erfolgreichem Start: Datenstrom abschalten, Wiedereinschalten für das Ende vorplanen. */
+    _afterStart(tSend, tReply) {
+        this._clearGate();
+        if (!this.gateStream) return;
+        const startMid = (tSend + tReply) / 2;
+        this._predEnd = startMid + this._runExpectedMs + this._endBias;
+        this.setNotifications(false).catch((err) => this._fail(err));
+        this._endTimer = setTimeout(() => this._armEnd(), Math.max(0, this._predEnd - GATE_LEAD_MS - performance.now()));
+    }
+
+    async _armEnd() {
+        if (!this.running) return;
+        try { await this.setNotifications(true); } catch (err) { this._fail(err); return; }
+        // Ende-Ereignis nicht angekommen (z. B. zu spät eingeschaltet)? Dann per Status nachsehen.
+        this._fallbackTimer = setTimeout(() => this._checkEnded(), Math.max(0, this._predEnd + END_FALLBACK_MS - performance.now()));
+    }
+
+    async _checkEnded() {
+        if (!this.running) return;
+        try {
+            const r = await this._request(new Uint8Array([OP_STATUS]));
+            if (r[3] !== STATE_RUNNING) {
+                this._trace('decision', { what: 'end-missed' });
+                this._predEnd = 0;   // keine Bias-Auswertung ohne echtes Ereignis
+                this._onSessionEnd();
+            } else {
+                this._fallbackTimer = setTimeout(() => this._checkEnded(), 800);
+            }
+        } catch (err) { this._fail(err); }
     }
 
     // ─── Fehler ──────────────────────────────────────────────────────────────

@@ -137,7 +137,12 @@ export function analyzeTrace(traceIn, opts = {}) {
     const good = full.filter(c => c.matched && Math.abs(c.startLag) <= START_TOL_MS
         && (c.endOffset == null || Math.abs(c.endOffset) <= END_TOL_MS));
 
+    const overheadEvents = decisions.filter(d => d.what === 'overhead');
+    const lastOverhead = overheadEvents[overheadEvents.length - 1] || null;
+
     const summary = {
+        gapEstMs: lastOverhead ? lastOverhead.gap : null,
+        overheadMs: lastOverhead ? lastOverhead.to : null,
         pacerCycles: full.length,
         matchedCycles: full.filter(c => c.matched).length,
         oneWayMs: oneWay,
@@ -202,7 +207,9 @@ export function traceFindings(a, label) {
         const sev = Math.abs(m) > 250 ? 'bad' : Math.abs(m) > START_TOL_MS ? 'warn' : 'ok';
         out.push(F(sev, `${L}Start: Moonbird beginnt Ø ${sgn(m)} ms nach dem Pacer-Einatmen (σ ${r0(sd)} ms)`,
             `Davon ${r0(s.cmdLag?.mean)} ms Wartezeit in der App bis zum Senden, ${r0(s.ack?.mean)} ms Schreib-Bestätigung, Rest Gerätestart${s.calibrated ? ' (kalibriert über Geräteuhr)' : ' (geschätzt, ohne Kalibrierung)'}. Schätzunsicherheit ca. ±${r0(s.oneWayMs)} ms.`,
-            sev === 'ok' ? null : `Vorhalt: den Start-Befehl ca. ${r0(m)} ms VOR dem Einatem-Signal senden (Zeitpunkt aus dem Pacer-Zyklus vorausberechnen).`));
+            sev === 'ok' ? null : (Math.abs(m) <= 400
+                ? `Vorhalt: den Start-Befehl ca. ${r0(m)} ms VOR dem Einatem-Signal senden (Zeitpunkt aus dem Pacer-Zyklus vorausberechnen).`
+                : 'Zuerst die Ursache des großen Verzugs beheben (Datenstrom-Befund, „Moonbird noch im vorigen Atemzug"); ein Vorhalt hilft erst bei kleinem, stabilem Versatz.')));
         if (sd > 80) {
             out.push(F('warn', `${L}Startzeitpunkt schwankt (σ ${r0(sd)} ms, max ${sgn(base.max)} ms)`,
                 'Ein fester Vorhalt kann die Streuung nicht beseitigen — sie stammt aus BLE-Übertragung/Verbindungsintervall.',
@@ -231,7 +238,7 @@ export function traceFindings(a, label) {
     }
     if (s.breathDeficit && s.breathDeficit.mean > 20) {
         out.push(F('info', `${L}Ausatmung am Moonbird um Ø ${r0(s.breathDeficit.mean)} ms gekürzt`,
-            `Der Halt nach Ausatmen ist kürzer als die Befehlslaufzeit (${CMD_OVERHEAD_MS} ms); die Kürzung verhindert Drift, verändert aber die Ausatem-Dauer minimal.`,
+            `Zwischen zwei Atemzügen vergehen ${s.gapEstMs != null ? r0(s.gapEstMs) + ' ms (gemessen)' : 'ca. ' + CMD_OVERHEAD_MS + ' ms (Annahme)'} für Ende-Ereignis, Programm setzen und Start. Ohne Halt nach Ausatmen wird die Ausatmung am Moonbird um diese Zeit gekürzt, damit der Rhythmus nicht driftet.`,
             'Bei Rhythmen ohne Halt lässt sich das nur durch früheres Vorbereiten (Programm während der letzten Ausatmung setzen) vermeiden — vom Gerät aktuell nicht erlaubt (Programm nur im Leerlauf).'));
     }
     if (s.endOffset && Math.abs(s.endOffset.mean) > END_TOL_MS) {
@@ -302,8 +309,24 @@ export function buildFindings(results) {
         out.push(F('info', 'EKG-Einfluss nicht gemessen', le.skipped));
     }
 
+    const st = results.stream;
+    if (st && !st.error && st.idle && st.running) {
+        const idle = st.idle.p50, run = st.running.p50;
+        const bad = st.timeouts > 0 || run > Math.max(300, 3 * idle);
+        out.push(F(bad ? 'bad' : 'ok',
+            `Sensor-Datenstrom: ${st.streamRate != null ? r0(st.streamRate) + ' Notifications/s' : 'kein Datenstrom erkannt'}; Antwortzeit während der Session Median ${r0(run)} ms (Leerlauf ${r0(idle)} ms), p95 ${r0(st.running.p95)} ms`,
+            `${st.timeouts} von ${st.polls} Abfragen ohne Antwort. Ende-Ereignis kam ${sgn(st.f1DelayMs)} ms gegenüber der Erwartung.`,
+            bad ? 'Der Datenstrom verstopft die Funkstrecke. Gegenmaßnahme (Benachrichtigungen während der Session aus) ist im Training aktiv — Spiegeltest vs. „ohne Stream-Trick" zeigt die Wirkung.' : null));
+    } else if (st?.error) {
+        out.push(F('warn', 'Datenstrom-Test fehlgeschlagen', st.error));
+    }
+
     const ck = results.clock;
-    if (ck && !ck.error) {
+    if (ck && !ck.error && ck.reliable === false) {
+        out.push(F('warn', `Uhren-Messung nicht belastbar (${ck.samples} Messpunkte, Streuung σ ${r0(ck.residualSd)} ms)`,
+            `Die Statusantworten waren zu ungleichmäßig, um die Geräteuhr und den Startverzug sauber zu bestimmen; die Schätzungen der Spiegeltests bleiben ungenau (Startverzug/Ende nur nach Schreib-Bestätigung geschätzt).`,
+            'Diagnose wiederholen; der Datenstrom-Befund erklärt meist die Ursache.'));
+    } else if (ck && !ck.error) {
         const ae = Math.abs(ck.ppm);
         const significant = ae > 2 * ck.ppmSe;
         const sev = !significant ? 'ok' : ae > 1000 ? 'bad' : ae > 300 ? 'warn' : 'ok';
@@ -330,7 +353,15 @@ export function buildFindings(results) {
             'Die Session-Dauer lag nicht vor dem Ende der ersten Ausatmung — das Gerät hängt einen zweiten Atemzug an.', 'END_MARGIN vergrößern bzw. Dauer früher legen.'));
     }
 
-    ['mirrorFixed', 'mirrorChange'].forEach(k => {
+    const gA = results.mirrorFixed?.analysis?.summary, gB = results.mirrorAlwaysOn?.analysis?.summary;
+    if (gA && gB) {
+        const f = (x) => x == null ? '–' : `${x > 0 ? '+' : ''}${x.toFixed(2)} %`;
+        const better = (gA.matchedCycles >= gB.matchedCycles) && Math.abs(gA.freqErrorPct ?? 99) <= Math.abs(gB.freqErrorPct ?? 0) + 0.2;
+        out.push(F(better ? 'ok' : 'info',
+            `Stream-Trick im Vergleich: Frequenz ${f(gA.freqErrorPct)} statt ${f(gB.freqErrorPct)}, Startverzug Ø ${r0((gA.startLagClean || gA.startLag)?.mean)} statt ${r0((gB.startLagClean || gB.startLag)?.mean)} ms, ${gA.matchedCycles}/${gA.pacerCycles} statt ${gB.matchedCycles}/${gB.pacerCycles} Atemzüge zugeordnet`,
+            'Mit Stream-Trick (Standard) sind die Benachrichtigungen während der Session aus, ohne bleiben sie dauernd an.'));
+    }
+    ['mirrorFixed', 'mirrorChange', 'mirrorAlwaysOn'].forEach(k => {
         const r = results[k];
         if (r && r.analysis) out.push(...traceFindings(r.analysis, r.label));
         else if (r?.error) out.push(F('bad', `${r.label || k} fehlgeschlagen`, r.error));
@@ -501,7 +532,9 @@ export class MoonbirdDiagnostics {
     }
 
     // ── Geräteuhr + Startverzug ──
-    // Lange Session (~40 s), damit der Uhrenfehler auflösbar ist: Steigungs-Unsicherheit ≈ σ / (Dauer · √(n/12)).
+    // Gepulste Messung: Benachrichtigungen sind während der Session aus (sonst verstopft der Sensor-
+    // Datenstrom die Strecke und verfälscht die Zeiten). Nur für jeweils ~300 ms einschalten, Status
+    // abfragen, wieder ausschalten. ~40 s Messdauer, damit der Uhrenfehler auflösbar ist.
     async runClock(durationMs = 38000) {
         const rh = { holdOut: 1000, inhale: 3000, holdIn: 1000, exhale: 5000 };
         const e1 = rh.inhale + rh.holdIn + rh.exhale;
@@ -515,26 +548,34 @@ export class MoonbirdDiagnostics {
             if (!(prog[1] === 1 && prog[2] === 0)) throw new Error('Programm abgelehnt');
             const rep = await this.mb.request(MoonbirdController.startCommand);
             if (!(rep[1] === 1 && rep[2] === 0)) throw new Error('Start abgelehnt');
-            const startCmd = this._lastCmd(0x07);
-            const tSend = startCmd.tSend, tReply = rep.tRecv;
+            const tSend = this._lastCmd(0x07).tSend, tReply = rep.tRecv;
+            const startMid = (tSend + tReply) / 2;
+            const predEnd = startMid + plannedEnd;
+            await this.mb.setNotifications(false);
 
-            const ended = this.mb.waitSessionEnd(plannedEnd + 15000);
-            let over = false; ended.then(() => { over = true; });
             const samples = [];
-            while (!over) {
+            const rtts = [];
+            let pulses = 0, failed = 0;
+            while (performance.now() < predEnd - 3500) {
                 this._check();
-                this._progress(`Uhren-Test: ${samples.length} Messpunkte (ca. ${Math.round(plannedEnd / 1000)} s)`, samples.length, Math.round(plannedEnd / 320));
+                this._progress(`Uhren-Test: ${samples.length} Messpunkte (ca. ${Math.round(plannedEnd / 1000)} s)`, samples.length, 16);
+                pulses++;
                 try {
-                    const r = await this.mb.request([0x04], 2500);
-                    const st = MoonbirdController.parseStatus(r);
+                    await this.mb.setNotifications(true);
+                    const r = await this.mb.request([0x04], 1500);
                     const c = this._lastCmd(0x04);
-                    if (st.running && st.counterMs != null) samples.push({ tMid: (c.tSend + r.tRecv) / 2, counter: st.counterMs });
-                } catch { /* einzelne Ausfälle tolerieren */ }
-                await sleep(320);
+                    const st = MoonbirdController.parseStatus(r);
+                    const rtt = r.tRecv - c.tSend;
+                    rtts.push(rtt);
+                    if (st.running && st.counterMs != null && rtt < 500) samples.push({ tMid: (c.tSend + r.tRecv) / 2, counter: st.counterMs });
+                } catch { failed++; }
+                try { await this.mb.setNotifications(false); } catch { /* egal */ }
+                await this._sleep(1700);
             }
-            if (!(await ended)) throw new Error('Session-Ende nicht gemeldet');
-            const tEnd = this._lastEndTime();
-            if (samples.length < 8) throw new Error(`zu wenige Messpunkte (${samples.length})`);
+            const endRes = await this.mb.waitEndGated(startMid, plannedEnd, 20000);
+            if (!endRes.ended) throw new Error('Session-Ende nicht gemeldet');
+            const tEnd = endRes.tEnd;
+            if (samples.length < 8) throw new Error(`zu wenige brauchbare Messpunkte (${samples.length} von ${pulses}, ${failed} ohne Antwort)`);
 
             // counter = a * tMid + c  → Gerätestart (Handy-Zeit) = −c / a
             const n = samples.length;
@@ -548,21 +589,67 @@ export class MoonbirdDiagnostics {
             const resSd = stats(samples.map(x => x.counter - (a * x.tMid + c0))).sd;
             const span = samples[n - 1].tMid - samples[0].tMid;
             const res = {
-                samples: n,
+                samples: n, pulses, failed,
                 spanMs: span,
                 ratio: a,
                 ppm: (a - 1) * 1e6,
                 ppmSe: resSd / (span * Math.sqrt(n / 12)) * 1e6,   // Standardfehler der Steigung
                 residualSd: resSd,
+                rtt: stats(rtts),
                 devStart,
                 startBias: devStart - tSend,          // Gerätestart relativ zum Sende-Zeitpunkt
                 startBiasReply: devStart - tReply,    // relativ zur Antwort (negativ: Gerät startete vor der Antwort)
                 endLatency: tEnd - (devStart + plannedEnd / a),   // Ende-Ereignis kommt so spät nach dem Geräte-Ende
             };
-            this.calibration = { startBias: res.startBias, endLatency: res.endLatency };
+            res.reliable = n >= 8 && resSd < 60;
+            this.calibration = res.reliable ? { startBias: res.startBias, endLatency: res.endLatency } : null;
             return (this.results.clock = res);
         } catch (err) {
             return (this.results.clock = { error: err.message });
+        }
+    }
+
+    // ── Datenstrom-Last: verlangsamt der Sensor-Datenstrom die Antworten während einer Session? ──
+    async runStream() {
+        const mb = this.mb;
+        try {
+            this._progress('Datenstrom-Test: Leerlauf messen …');
+            await mb.ensureIdle();
+            await mb.setNotifications(true);
+            const idle = [];
+            for (let i = 0; i < 6; i++) {
+                try { await mb.request([0x04], 2500); const c = this._lastCmd(0x04); idle.push(c.tReply - c.tSend); } catch { /* zählt nicht */ }
+                await this._sleep(150);
+            }
+            const breath = 9000;
+            const prog = await mb.request(MoonbirdController.programBytes(1000, 3000, 1000, 5000, breath - END_MARGIN_MS));
+            if (!(prog[1] === 1 && prog[2] === 0)) throw new Error('Programm abgelehnt');
+            const rep = await mb.request(MoonbirdController.startCommand);
+            if (!(rep[1] === 1 && rep[2] === 0)) throw new Error('Start abgelehnt');
+            const startMid = (this._lastCmd(0x07).tSend + rep.tRecv) / 2;
+            mb.resetStreamStats();
+
+            const runRtts = [];
+            let timeouts = 0;
+            while (performance.now() < startMid + breath - 1500) {
+                this._check();
+                this._progress(`Datenstrom-Test: Antwortzeit während der Session (${runRtts.length + timeouts} Abfragen)`);
+                try { await mb.request([0x04], 2500); const c = this._lastCmd(0x04); runRtts.push(c.tReply - c.tSend); } catch { timeouts++; }
+                await this._sleep(250);
+            }
+            const stream = mb.streamStats;
+            const ended = await mb.waitSessionEnd(20000);
+            const tEnd = this._lastEndTime();
+            const res = {
+                idle: stats(idle),
+                running: stats(runRtts),
+                timeouts, polls: runRtts.length + timeouts,
+                streamRate: stream.ratePerS, streamCount: stream.count,
+                f1DelayMs: ended && tEnd ? tEnd - (startMid + breath) : null,
+            };
+            return (this.results.stream = res);
+        } catch (err) {
+            return (this.results.stream = { error: err.message });
         }
     }
 
@@ -587,9 +674,9 @@ export class MoonbirdDiagnostics {
                 const rep = await this.mb.request(MoonbirdController.startCommand);
                 if (!(rep[1] === 1 && rep[2] === 0)) throw new Error('Start abgelehnt');
                 const tSend = this._lastCmd(0x07).tSend;
-                const ok = await this.mb.waitSessionEnd(planned * 2 + 8000);
-                if (!ok) throw new Error('Session-Ende nicht gemeldet');
-                const tEnd = this._lastEndTime();
+                const g = await this.mb.waitEndGated((tSend + rep.tRecv) / 2, planned, planned * 2 + 8000);
+                if (!g.ended) throw new Error('Session-Ende nicht gemeldet');
+                const tEnd = g.tEnd;
                 const oneWay = 50;
                 const startBias = this.calibration?.startBias ?? oneWay;
                 const endLat = this.calibration?.endLatency ?? oneWay;
@@ -673,6 +760,18 @@ export class MoonbirdDiagnostics {
         return this.runMirror({ key: 'mirrorChange', label: 'Spiegeltest mit Rhythmuswechsel', rhythms: [b, step(300), step(600), step(300), b, step(-300)], cycles });
     }
 
+    /** Vergleichslauf: Benachrichtigungen bleiben während der Session an (ohne Stream-Trick). */
+    async mirrorAlwaysOn(cycles = 4) {
+        const prev = this.mb.gateStream;
+        this.mb.gateStream = false;
+        try {
+            return await this.runMirror({ key: 'mirrorAlwaysOn', label: 'Spiegeltest OHNE Stream-Trick (Vergleich)', rhythms: [this.baseRhythm], cycles });
+        } finally {
+            this.mb.gateStream = prev;
+            await this.mb.setNotifications(true).catch(() => {});
+        }
+    }
+
     /** Auswertung des letzten realen Trainings (aus dem laufenden Zeitprotokoll). */
     analyzeLive() {
         return (this.results.live = analyzeLastTraining(this.mb.trace, this.calibration));
@@ -684,10 +783,12 @@ export class MoonbirdDiagnostics {
             env: () => this.runEnvironment(),
             latency: () => this.runLatency(30),
             latencyEcg: () => this.runLatencyEcg(20),
+            stream: () => this.runStream(),
             clock: () => this.runClock(),
             accuracy: () => this.runAccuracy(),
             mirrorFixed: () => this.mirrorFixed(),
             mirrorChange: () => this.mirrorChange(),
+            mirrorAlwaysOn: () => this.mirrorAlwaysOn(),
             live: async () => this.analyzeLive(),
         };
         try { return await map[name](); }
@@ -696,7 +797,7 @@ export class MoonbirdDiagnostics {
 
     async runAll() {
         this._aborted = false;
-        const steps = ['env', 'latency', 'latencyEcg', 'clock', 'accuracy', 'mirrorFixed', 'mirrorChange'];
+        const steps = ['env', 'latency', 'latencyEcg', 'stream', 'clock', 'accuracy', 'mirrorFixed', 'mirrorChange', 'mirrorAlwaysOn'];
         for (const s of steps) {
             this._check();
             try { await this.runOne(s); }
@@ -740,10 +841,11 @@ export function renderText(report) {
         L.push(`  Frames ${fmtStats(r.env.frames)} | Timer-Jitter ${fmtStats(r.env.timerJitter)} | Hauptthread-Blockaden ${r.env.longTasks?.count ?? 0} (max ${r0(r.env.longTasks?.maxMs)} ms) | Hintergrund ${r.env.hiddenEvents ?? 0}×`);
     }
     if (r.latency) L.push(`Latenz: Schreib-Bestätigung ${fmtStats(r.latency.ack)}; Antwort ${fmtStats(r.latency.reply)}`);
+    if (r.stream && !r.stream.error) L.push(`Datenstrom: ${r0(r.stream.streamRate)}/s, Antwortzeit laufend ${fmtStats(r.stream.running)} (Leerlauf Median ${r0(r.stream.idle?.p50)} ms), Timeouts ${r.stream.timeouts}/${r.stream.polls}, Ende-Ereignis ${sgn(r.stream.f1DelayMs)} ms`);
     if (r.latencyEcg?.without) L.push(`Latenz ohne/mit EKG (Median): ${r0(r.latencyEcg.without.ack?.p50)} / ${r0(r.latencyEcg.with?.ack?.p50)} ms`);
     if (r.clock && !r.clock.error) L.push(`Uhr: ${sgn(r.clock.ppm)} ± ${r0(r.clock.ppmSe)} ppm, Start ${sgn(r.clock.startBias)} ms nach Senden, Ende-Latenz ${r0(r.clock.endLatency)} ms, σ ${r0(r.clock.residualSd)} ms`);
     if (r.accuracy?.items) L.push(`Atemzug-Genauigkeit: ${r.accuracy.items.map(i => `${r0(i.planned)}→${sgn(i.error)}`).join(', ')} ms`);
-    ['mirrorFixed', 'mirrorChange', 'live'].forEach(k => {
+    ['mirrorFixed', 'mirrorChange', 'mirrorAlwaysOn', 'live'].forEach(k => {
         const a = r[k]?.analysis;
         if (!a) return;
         const s = a.summary;
@@ -793,7 +895,7 @@ export function renderHTML(report) {
             + (f.detail ? `<div class="dz-detail">${esc(f.detail)}</div>` : '')
             + (f.suggestion ? `<div class="dz-sugg">→ ${esc(f.suggestion)}</div>` : '') + '</div>');
     });
-    ['mirrorFixed', 'mirrorChange', 'live'].forEach(k => {
+    ['mirrorFixed', 'mirrorChange', 'mirrorAlwaysOn', 'live'].forEach(k => {
         const a = r[k]?.analysis;
         if (!a) return;
         parts.push(`<h3 class="dz-h">${esc(r[k].label || 'Letztes Training')} — Startverzug je Atemzug</h3>`);

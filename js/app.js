@@ -671,6 +671,8 @@ class App {
         // damit schon der erste Atemzug gespürt wird. Ohne Moonbird ändert sich nichts.
         if (this.moonbird.isConnected) {
             if (startBtn) startBtn.textContent = 'Moonbird wird vorbereitet…';
+            const savedOverhead = await this.db.getSetting('moonbirdOverheadMs', null).catch(() => null);
+            if (savedOverhead) this.moonbird.restoreOverhead(savedOverhead);
             const moonbirdReady = await this.moonbird.follow(baseRhythm);
             if (startBtn) startBtn.textContent = 'Training starten';
             if (!moonbirdReady) this._showToast('Moonbird nicht bereit – Training läuft ohne Moonbird.');
@@ -936,6 +938,8 @@ class App {
 
     _adaptiveOnComplete(summary) {
         this.adaptiveTest = null;
+        const learned = this.moonbird.learnedOverheadMs;
+        if (learned) this.db.setSetting('moonbirdOverheadMs', learned).catch(() => {});
         this._adaptiveShowSection('adaptive-result');
 
         const reportBtn = document.getElementById('adaptive-moonbird-report-btn');
