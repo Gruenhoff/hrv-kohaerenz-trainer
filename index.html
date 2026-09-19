@@ -1312,6 +1312,7 @@
         <div id="adaptive-moonbird-row" style="text-align:center;margin:0 0 1rem">
             <div class="ble-status-text" id="adaptive-moonbird-status" style="margin-bottom:0.4rem">Moonbird (optional): nicht verbunden</div>
             <button class="btn-connect-header" id="adaptive-moonbird-btn">Moonbird verbinden</button>
+            <button class="btn-connect-header" id="adaptive-moonbird-diag-btn">Moonbird-Diagnose</button>
             <div class="ble-status-text" style="margin-top:0.4rem;opacity:0.7">Die Moonbird-App muss dafür geschlossen sein.</div>
         </div>
         <button class="rez-primary-btn" id="adaptive-start-btn">Training starten</button>
@@ -1339,6 +1340,7 @@
             <p class="rez-subhead">Zusammenfassung der Live-Anpassungen</p>
         </div>
         <div id="adaptive-summary" class="rez-final-card" style="text-align:left;padding:1rem 1.25rem"></div>
+        <button class="rez-primary-btn" id="adaptive-moonbird-report-btn" style="display:none">Moonbird-Bericht ansehen</button>
         <button class="rez-primary-btn" id="adaptive-done-btn">Fertig</button>
     </div>
 
@@ -1357,6 +1359,87 @@
         overflow-y: auto;
     }
     #adaptive-screen > div { width: 100%; max-width: 400px; margin: auto; }
+</style>
+
+
+<!-- ══════════════════════════════════════════════════════════
+     MOONBIRD-DIAGNOSE
+     ══════════════════════════════════════════════════════════ -->
+<div id="moonbird-diag-screen" style="display:none">
+    <div>
+        <div class="rez-header">
+            <h2>Moonbird-Diagnose</h2>
+            <p class="rez-subhead">
+                Misst, wie exakt das Moonbird die Frequenz des Pacers abbildet, und deckt Hemmnisse auf.
+                Moonbird in der Hand halten, Moonbird-App geschlossen lassen.
+            </p>
+        </div>
+
+        <div id="mbd-status" class="ble-status-text" style="text-align:center;margin:0.5rem 0"></div>
+        <div style="text-align:center;margin-bottom:0.75rem">
+            <button class="btn-connect-header" id="mbd-connect-btn">Moonbird verbinden</button>
+        </div>
+
+        <button class="rez-primary-btn" id="mbd-run-all">Komplette Diagnose (ca. 4–5 Min.)</button>
+        <div class="mbd-tests" id="mbd-tests">
+            <button class="btn-connect-header" data-test="env">Umgebung</button>
+            <button class="btn-connect-header" data-test="latency">Latenz</button>
+            <button class="btn-connect-header" data-test="latencyEcg">Latenz mit/ohne EKG</button>
+            <button class="btn-connect-header" data-test="clock">Geräteuhr &amp; Startverzug</button>
+            <button class="btn-connect-header" data-test="accuracy">Atemzug-Genauigkeit</button>
+            <button class="btn-connect-header" data-test="mirrorFixed">Spiegeltest</button>
+            <button class="btn-connect-header" data-test="mirrorChange">Spiegeltest mit Wechsel</button>
+            <button class="btn-connect-header" data-test="live">Letztes Training</button>
+        </div>
+        <button class="btn-stop-session" id="mbd-abort" style="display:none;margin-top:0.5rem">Abbrechen</button>
+
+        <div id="mbd-progress" class="ble-status-text" style="text-align:center;margin:0.75rem 0;min-height:1.2em"></div>
+        <div id="mbd-pacer-wrap" style="display:none">
+            <div id="mbd-pacer" class="pacer-orb-host" style="height:170px"></div>
+            <div class="pacer-text-row">
+                <span id="mbd-pacer-label" class="breath-phase-lbl">—</span>
+                <span id="mbd-pacer-count" class="breath-countdown-lbl"></span>
+            </div>
+        </div>
+
+        <div id="mbd-report"></div>
+        <div class="mbd-tests" id="mbd-export" style="display:none;margin-top:1rem">
+            <button class="btn-connect-header" id="mbd-copy-text">Bericht kopieren</button>
+            <button class="btn-connect-header" id="mbd-copy-json">JSON kopieren</button>
+            <button class="btn-connect-header" id="mbd-save-json">JSON speichern</button>
+        </div>
+        <button class="btn-stop-session" id="mbd-close" style="margin-top:1rem">Zurück</button>
+    </div>
+</div><!-- /#moonbird-diag-screen -->
+
+<style>
+    #moonbird-diag-screen {
+        position: fixed;
+        inset: 0;
+        z-index: 950;
+        background: var(--bg-primary);
+        display: flex;
+        justify-content: center;
+        padding: 1.5rem 1rem;
+        overflow-y: auto;
+    }
+    #moonbird-diag-screen > div { width: 100%; max-width: 560px; margin: 0 auto; }
+    .mbd-tests { display: flex; flex-wrap: wrap; gap: 0.4rem; justify-content: center; margin: 0.5rem 0; }
+    .mbd-tests button:disabled, #mbd-run-all:disabled { opacity: 0.4; pointer-events: none; }
+    .dz-verdict { font-size: 0.95rem; font-weight: 600; color: var(--accent-cyan); margin: 1rem 0 0.25rem; }
+    .dz-h { font-size: 0.85rem; font-weight: 600; color: var(--text-secondary); margin: 1.1rem 0 0.5rem; letter-spacing: 0.04em; }
+    .dz-finding { background: var(--bg-card); border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: var(--radius); padding: 0.6rem 0.8rem; margin-bottom: 0.5rem; }
+    .dz-finding.dz-bad  { border-left-color: #ff4444; }
+    .dz-finding.dz-warn { border-left-color: #ff8800; }
+    .dz-finding.dz-info { border-left-color: #00d4ff; }
+    .dz-finding.dz-ok   { border-left-color: #00e5a0; }
+    .dz-title  { font-size: 0.85rem; font-weight: 600; color: var(--text-primary); line-height: 1.35; }
+    .dz-detail { font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.25rem; line-height: 1.45; }
+    .dz-sugg   { font-size: 0.75rem; color: var(--accent-gold, #c9a84c); margin-top: 0.25rem; line-height: 1.45; }
+    .dz-table { width: 100%; border-collapse: collapse; font-size: 0.72rem; margin: 0.4rem 0; }
+    .dz-table th, .dz-table td { border-bottom: 1px solid var(--border); padding: 0.28rem 0.35rem; text-align: left; color: var(--text-secondary); }
+    .dz-table th { color: var(--text-primary); font-weight: 600; }
+    .dz-table tr.dz-miss td { color: #ff8800; }
 </style>
 
 

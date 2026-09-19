@@ -3,7 +3,7 @@
  * Ermöglicht Offline-Nutzung (außer Bluetooth-Verbindung)
  */
 
-const CACHE_NAME = 'hrv-trainer-v12';
+const CACHE_NAME = 'hrv-trainer-v13';
 
 // Relative Pfade → funktioniert in Root-Deploy und Subdirectory-Deploy (GitHub Pages)
 const BASE = self.registration.scope;
@@ -30,6 +30,7 @@ const STATIC_ASSETS = [
     BASE + 'js/speech.js',
     BASE + 'js/ecgAnalysis.js',
     BASE + 'js/moonbird.js',
+    BASE + 'js/moonbirdDiagnostics.js',
     BASE + 'manifest.json',
     BASE + 'icons/icon.svg',
 ];

@@ -63,6 +63,11 @@ export class MoonbirdController {
         this._endListeners = [];
         this._chain = Promise.resolve(); // serialisiert GATT-Operationen
 
+        // Zeitprotokoll für die Diagnose (moonbirdDiagnostics.js): Pacer-Phasen, Befehle
+        // mit Sende-/Schreib-/Antwortzeit, Ende-Ereignisse, Entscheidungen. Zeiten: performance.now().
+        this.trace = [];
+        this._lastProgram = null;
+
         this._onNotifyBound = (e) => {
             const v = e.target.value;
             this._onNotify(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
@@ -126,6 +131,7 @@ export class MoonbirdController {
 
     _handleDisconnect() {
         const wasConnected = this.isConnected;
+        if (wasConnected) this._trace('decision', { what: 'disconnect' });
         this._teardown();
         if (wasConnected) this.onConnectionChange?.(false);
     }
@@ -149,12 +155,22 @@ export class MoonbirdController {
         this._writeChar = null;
     }
 
+    // ─── Diagnose-Protokoll ──────────────────────────────────────────────────
+
+    _trace(type, data = {}) {
+        this.trace.push({ type, t: performance.now(), ...data });
+        if (this.trace.length > 20000) this.trace.splice(0, 5000);
+    }
+
+    clearTrace() { this.trace = []; }
+
     // ─── Kommunikation ───────────────────────────────────────────────────────
 
     _onNotify(bytes) {
         if (!bytes.length) return;
+        bytes.tRecv = performance.now();
         const op = bytes[0];
-        if (op === EVT_SESSION_END) { this._onSessionEnd(); return; }
+        if (op === EVT_SESSION_END) { this._trace('end'); this._onSessionEnd(); return; }
         const w = this._waiters.get(op);
         if (w) {
             this._waiters.delete(op);
@@ -174,6 +190,7 @@ export class MoonbirdController {
     /** Befehl senden und auf die Antwort-Notification warten (GATT-Zugriffe laufen nacheinander). */
     _request(bytes, timeoutMs = REQUEST_TIMEOUT_MS) {
         const replyOp = bytes[0] | REPLY_FLAG;
+        const rec = { op: bytes[0], tQueued: performance.now(), tSend: null, tWritten: null, tReply: null, reply: null, error: null };
         const run = async () => {
             if (!this.isConnected) throw new Error('Moonbird nicht verbunden');
             const reply = new Promise((resolve, reject) => {
@@ -184,8 +201,10 @@ export class MoonbirdController {
                 this._waiters.set(replyOp, { resolve, reject, timer });
             });
             reply.catch(() => {});
+            rec.tSend = performance.now();
             try {
                 await this._write(bytes);
+                rec.tWritten = performance.now();
             } catch (err) {
                 const w = this._waiters.get(replyOp);
                 if (w) { clearTimeout(w.timer); this._waiters.delete(replyOp); }
@@ -193,12 +212,50 @@ export class MoonbirdController {
             }
             return reply;
         };
+        const finish = () => this.trace.push({ type: 'cmd', t: rec.tQueued, ...rec });
         const p = this._chain.then(run, run);
+        p.then((reply) => {
+            rec.tReply = reply.tRecv ?? performance.now();
+            rec.reply = Array.from(reply.slice(0, 8), b => b.toString(16).padStart(2, '0')).join('');
+            finish();
+        }, (err) => { rec.error = err.message; finish(); });
         this._chain = p.catch(() => {});
         return p;
     }
 
     static _ok(reply) { return reply[1] === 0x01 && reply[2] === 0x00; }
+
+    // ─── Öffentliche Hilfen (Diagnose) ───────────────────────────────────────
+
+    /** Rohbefehl senden und Antwort abwarten (Bytes mit .tRecv = Empfangszeit). */
+    request(bytes, timeoutMs) { return this._request(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), timeoutMs); }
+    ensureIdle() { return this._ensureIdle(); }
+    waitSessionEnd(timeoutMs = IDLE_WAIT_MS) { return this._waitSessionEnd(timeoutMs); }
+    static get startCommand() { return START_CMD; }
+
+    /** Antwort auf 04 zerlegen: Zustand, Sessionzähler (ms seit Start, nur wenn läuft). */
+    static parseStatus(reply) {
+        const running = reply[3] === STATE_RUNNING;
+        let counterMs = null;
+        if (running && reply.length >= 38) {
+            counterMs = ((reply[34] << 24) | (reply[35] << 16) | (reply[36] << 8) | reply[37]) >>> 0;
+        }
+        return { running, counterMs };
+    }
+
+    /** Programm-Befehl (Opcode 05) aus Rohwerten in ms bauen. */
+    static programBytes(holdOut, inhale, holdIn, exhale, duration) {
+        const buf = new Uint8Array(22);
+        const dv = new DataView(buf.buffer);
+        buf[0] = OP_PROGRAM;
+        buf[1] = 0x01;
+        [holdOut, inhale, holdIn, exhale, duration].forEach((v, i) => dv.setUint32(2 + i * 4, Math.round(v), false));
+        return buf;
+    }
+
+    static get constants() {
+        return { MIN_SESSION_MS, END_MARGIN_MS, CMD_OVERHEAD_MS };
+    }
 
     async _queryRunning() {
         const r = await this._request(new Uint8Array([OP_STATUS]));
@@ -243,14 +300,9 @@ export class MoonbirdController {
         const duration = breath - END_MARGIN_MS;
         if (duration < MIN_SESSION_MS) return null;
 
-        const buf = new Uint8Array(22);
-        const dv = new DataView(buf.buffer);
-        buf[0] = OP_PROGRAM;
-        buf[1] = 0x01;
-        [holdOut, r.inhale, r.holdIn || 0, exhale, duration]
-            .forEach((v, i) => dv.setUint32(2 + i * 4, Math.round(v), false));
         this._runExpectedMs = breath;
-        return buf;
+        this._lastProgram = { holdOut, inhale: r.inhale, holdIn: r.holdIn || 0, exhale, duration, breath };
+        return MoonbirdController.programBytes(holdOut, r.inhale, r.holdIn || 0, exhale, duration);
     }
 
     // ─── Kopplung an den Pacer ───────────────────────────────────────────────
@@ -260,9 +312,10 @@ export class MoonbirdController {
      * gestartet wird er mit dem nächsten Einatem-Signal des Pacers.
      * @returns {Promise<boolean>}
      */
-    async follow(rhythm) {
+    async follow(rhythm, source = 'training') {
         if (!this.isConnected) return false;
         this.rhythm = { ...rhythm };
+        this._trace('follow', { rhythm: { ...rhythm }, source });
         try {
             await this._ensureIdle();
             this.following = true;
@@ -280,11 +333,13 @@ export class MoonbirdController {
     /** Neuen Soll-Rhythmus vormerken (gilt ab dem nächsten Atemzug). */
     setRhythm(rhythm) {
         this.rhythm = { ...rhythm };
+        this._trace('rhythm', { rhythm: { ...rhythm } });
         if (this.following && this._tooFast && !this.running && !this._preparing) this._prepare();
     }
 
     /** Von app.js bei jedem Phasenwechsel des Pacers aufzurufen. */
     onPacerPhase(phase) {
+        this._trace('pacer', { phase, following: this.following });
         if (phase !== 'inhale' || !this.following) return;
         // Bewusst erst nach der aktuellen Verarbeitung: Das Adaptive Training ändert
         // den Rhythmus direkt nach dem Einatem-Signal — so startet der Atemzug
@@ -306,6 +361,7 @@ export class MoonbirdController {
             const program = this._programFor(this.rhythm);
             if (!program) {
                 this.prepared = null;
+                this._trace('decision', { what: 'too-fast' });
                 if (!this._tooFast) this.onNotice?.('Rhythmus zu schnell für das Moonbird (Atemzug unter ca. 8 s) – Moonbird pausiert.');
                 this._tooFast = true;
                 return;
@@ -334,9 +390,14 @@ export class MoonbirdController {
             try { if (!(await this._queryRunning())) this.running = false; } catch (err) { this._fail(err); return; }
         }
 
-        if (this.running || this._preparing) { this._wantStart = true; return; }
+        if (this.running || this._preparing) {
+            this._trace('decision', { what: this.running ? 'wait-running' : 'wait-preparing' });
+            this._wantStart = true;
+            return;
+        }
         if (this.prepared !== rhythmKey(this.rhythm)) {
             // nichts vorbereitet oder der Rhythmus hat sich zwischenzeitlich geändert
+            this._trace('decision', { what: this.prepared === null ? 'prepare-missing' : 'reprepare' });
             this._wantStart = true;
             this._prepare();
             return;
@@ -345,12 +406,15 @@ export class MoonbirdController {
         this._wantStart = false;
         this._starting = true;
         try {
+            const prog = this._lastProgram ? { ...this._lastProgram } : null;
             const reply = await this._request(START_CMD);
             if (MoonbirdController._ok(reply)) {
                 this.running = true;
                 this.prepared = null;
                 this._runStartedAt = Date.now();
+                this._trace('session', { prog, tReply: reply.tRecv });
             } else {
+                this._trace('decision', { what: 'start-rejected' });
                 this._wantStart = true; // vermutlich lief noch eine Session — nach deren Ende erneut versuchen
             }
         } catch (err) {
@@ -370,6 +434,7 @@ export class MoonbirdController {
 
     _fail(err) {
         console.error('Moonbird:', err);
+        this._trace('decision', { what: 'fail', error: err.message });
         const wasFollowing = this.following;
         this.following = false;
         this._wantStart = false;

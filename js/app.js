@@ -16,6 +16,7 @@ import { NightRecording } from './nightRecording.js';
 import { AdaptiveTraining } from './adaptiveTraining.js';
 import { SpeechCoach } from './speech.js';
 import { MoonbirdController } from './moonbird.js';
+import { MoonbirdDiagnostics, renderHTML as renderMoonbirdReport, renderText as renderMoonbirdText, analyzeLastTraining } from './moonbirdDiagnostics.js';
 
 // ─── Phasenspezifische Dauer-Optionen ────────────────────────────────────────
 const PHASE_DURATIONS = {
@@ -104,6 +105,10 @@ class App {
                 this._showToast('Moonbird getrennt – Training läuft ohne Moonbird weiter.');
             }
         };
+        this.moonbirdDiag = null;
+        this._moonbirdCalibration = null;
+        this._mbdBusy = false;
+        this._mbdReport = null;
         this.moonbird.onNotice = (msg) => this._showToast(msg);
         this.moonbird.onError  = (msg) => this._showError(msg);
 
@@ -594,6 +599,9 @@ class App {
 
         const moonbirdBtn = document.getElementById('adaptive-moonbird-btn');
         if (moonbirdBtn) moonbirdBtn.onclick = () => this._moonbirdToggle();
+        const moonbirdDiagBtn = document.getElementById('adaptive-moonbird-diag-btn');
+        if (moonbirdDiagBtn) moonbirdDiagBtn.onclick = () => this._moonbirdDiagOpen();
+        this.db.getSetting('moonbirdCalibration', null).then(c => { if (c) this._moonbirdCalibration = c; }).catch(() => {});
         const moonbirdRow = document.getElementById('adaptive-moonbird-row');
         if (moonbirdRow) moonbirdRow.style.display = MoonbirdController.isAvailable() ? '' : 'none';
         this._moonbirdUpdateUI();
@@ -796,11 +804,146 @@ class App {
                 : 'Moonbird (optional): nicht verbunden';
         }
         if (btn) btn.textContent = connected ? 'Moonbird trennen' : 'Moonbird verbinden';
+        this._moonbirdDiagUpdateUI();
+    }
+
+    // ─── Moonbird-Diagnose ──────────────────────────────────────────────────
+
+    async _moonbirdDiagOpen({ runLive = false } = {}) {
+        const screen = document.getElementById('moonbird-diag-screen');
+        if (!screen) return;
+        screen.style.display = '';
+
+        const rhythm = await this.db.getSetting('resonanceRhythm', null).catch(() => null);
+        this.moonbirdDiag?.dispose();
+        const wrap = document.getElementById('mbd-pacer-wrap');
+        const container = document.getElementById('mbd-pacer');
+        const label = document.getElementById('mbd-pacer-label');
+        const count = document.getElementById('mbd-pacer-count');
+        const progress = document.getElementById('mbd-progress');
+        this.moonbirdDiag = new MoonbirdDiagnostics({
+            moonbird: this.moonbird,
+            ble: this.ble,
+            rhythm,
+            createPacer: (r, onPhase) => {
+                if (wrap) wrap.style.display = '';
+                const p = new BreathPacer(container, r, label, count, null);
+                p.onPhaseChange = onPhase;
+                return p;
+            },
+            onProgress: ({ text }) => { if (progress) progress.textContent = text; },
+        });
+        if (this._moonbirdCalibration) this.moonbirdDiag.calibration = this._moonbirdCalibration;
+
+        document.getElementById('mbd-close').onclick = () => { if (!this._mbdBusy) screen.style.display = 'none'; };
+        document.getElementById('mbd-connect-btn').onclick = () => this._moonbirdToggle();
+        document.getElementById('mbd-run-all').onclick = () => this._moonbirdDiagRun('all');
+        document.querySelectorAll('#mbd-tests [data-test]').forEach(b => { b.onclick = () => this._moonbirdDiagRun(b.dataset.test); });
+        document.getElementById('mbd-abort').onclick = () => {
+            this.moonbirdDiag?.abort();
+            this.moonbird.release().catch(() => {});
+        };
+        document.getElementById('mbd-copy-text').onclick = () => this._mbdCopy(this._mbdReport ? renderMoonbirdText(this._mbdReport) : '');
+        document.getElementById('mbd-copy-json').onclick = () => this._mbdCopy(this._mbdJson());
+        document.getElementById('mbd-save-json').onclick = () => this._mbdDownload();
+
+        this._moonbirdDiagUpdateUI();
+        if (this._mbdReport) this._mbdShowReport();
+        if (runLive) await this._moonbirdDiagRun('live');
+    }
+
+    _moonbirdDiagUpdateUI() {
+        const status = document.getElementById('mbd-status');
+        if (!status) return;
+        const mb = this.moonbird.isConnected;
+        const h10 = this.ble.isConnected;
+        status.textContent = `Moonbird: ${mb ? 'verbunden' : 'nicht verbunden'} · H10: ${h10 ? 'verbunden' : 'nicht verbunden'}`;
+        const btn = document.getElementById('mbd-connect-btn');
+        if (btn) btn.textContent = mb ? 'Moonbird trennen' : 'Moonbird verbinden';
+        const busy = this._mbdBusy;
+        document.querySelectorAll('#mbd-tests [data-test], #mbd-run-all, #mbd-connect-btn, #mbd-close').forEach(b => { b.disabled = busy; });
+        const abort = document.getElementById('mbd-abort');
+        if (abort) abort.style.display = busy ? '' : 'none';
+    }
+
+    async _moonbirdDiagRun(name) {
+        if (this._mbdBusy || !this.moonbirdDiag) return;
+        if (this.adaptiveTest?.active) { this._showToast('Diagnose nicht während eines laufenden Trainings möglich.'); return; }
+        const needsMoonbird = !['env', 'live'].includes(name);
+        if (needsMoonbird && !this.moonbird.isConnected) { this._showToast('Bitte zuerst das Moonbird verbinden.'); return; }
+
+        this._mbdBusy = true;
+        this._moonbirdDiagUpdateUI();
+        const diag = this.moonbirdDiag;
+        const progress = document.getElementById('mbd-progress');
+        try {
+            if (name === 'all') await diag.runAll();
+            else await diag.runOne(name);
+            if (diag.calibration) {
+                this._moonbirdCalibration = diag.calibration;
+                this.db.setSetting('moonbirdCalibration', diag.calibration).catch(() => {});
+            }
+            if (progress) progress.textContent = 'Fertig.';
+        } catch (err) {
+            if (progress) progress.textContent = err.message === 'Abgebrochen' ? 'Abgebrochen.' : `Fehler: ${err.message}`;
+            if (err.message !== 'Abgebrochen') console.error('Moonbird-Diagnose:', err);
+            await this.moonbird.release().catch(() => {});
+        } finally {
+            this._mbdBusy = false;
+            const wrap = document.getElementById('mbd-pacer-wrap');
+            if (wrap) wrap.style.display = 'none';
+            this._mbdShowReport();
+            this._moonbirdDiagUpdateUI();
+        }
+    }
+
+    _mbdShowReport() {
+        if (!this.moonbirdDiag) return;
+        this._mbdReport = this.moonbirdDiag.buildReport();
+        const el = document.getElementById('mbd-report');
+        if (el) el.innerHTML = renderMoonbirdReport(this._mbdReport);
+        const exp = document.getElementById('mbd-export');
+        if (exp) exp.style.display = Object.keys(this._mbdReport.results).length ? '' : 'none';
+    }
+
+    _mbdJson() {
+        return JSON.stringify({ report: this._mbdReport, trace: this.moonbird.trace, userAgent: navigator.userAgent }, null, 1);
+    }
+
+    async _mbdCopy(text) {
+        if (!text) { this._showToast('Noch kein Bericht vorhanden.'); return; }
+        try {
+            await navigator.clipboard.writeText(text);
+            this._showToast('In die Zwischenablage kopiert.');
+        } catch {
+            const ta = document.createElement('textarea');
+            ta.value = text; document.body.appendChild(ta); ta.select();
+            try { document.execCommand('copy'); this._showToast('In die Zwischenablage kopiert.'); }
+            catch { this._showError('Kopieren nicht möglich — bitte „JSON speichern" verwenden.'); }
+            ta.remove();
+        }
+    }
+
+    _mbdDownload() {
+        if (!this._mbdReport) { this._showToast('Noch kein Bericht vorhanden.'); return; }
+        const blob = new Blob([this._mbdJson()], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `moonbird-diagnose-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.json`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 2000);
     }
 
     _adaptiveOnComplete(summary) {
         this.adaptiveTest = null;
         this._adaptiveShowSection('adaptive-result');
+
+        const reportBtn = document.getElementById('adaptive-moonbird-report-btn');
+        if (reportBtn) {
+            const hasLive = !!analyzeLastTraining(this.moonbird.trace, this._moonbirdCalibration).analysis;
+            reportBtn.style.display = hasLive ? '' : 'none';
+            reportBtn.onclick = () => this._moonbirdDiagOpen({ runLive: true });
+        }
 
         const el = document.getElementById('adaptive-summary');
         if (el) {
@@ -836,6 +979,11 @@ class App {
                 // Klebt der Rhythmus an 3,5 bzw. 8,0/min, wollte die Schleife noch weiter —
                 // entweder ist das echt, oder die Messung stimmt nicht. Beides sollte sichtbar sein.
                 rows.push(['Hinweis', `${summary.bandLimited}× an der Frequenzgrenze gedeckelt`]);
+            }
+            const live = analyzeLastTraining(this.moonbird.trace, this._moonbirdCalibration);
+            if (live.analysis?.summary.pacerCycles) {
+                const ms = live.analysis.summary;
+                rows.push(['Moonbird-Spiegelung', `${Math.round(ms.mirrorQualityPct ?? 0)} % der Atemzüge im Toleranzbereich · Ø Startverzug ${ms.startLag ? Math.round(ms.startLag.mean) : '–'} ms`]);
             }
             rows.push(['Sprach-Hinweise', `${summary.speechCues}×`]);
             rows.push(['Beobachtete Zyklen', `${summary.cyclesObserved}`]);
