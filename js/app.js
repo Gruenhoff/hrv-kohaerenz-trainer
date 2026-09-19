@@ -771,8 +771,8 @@ class App {
                 rows.push(['Reaktivitäts-Index', `${summary.avgReactivityIndex} bpm/s bei normaler Atemtiefe`]);
             }
             if (summary.bandLimited) {
-                // Klebt der Rhythmus am Bandrand, war die Tagesabweichung größer als ±1/min
-                // angenommen — oder die Messung stimmt nicht. Beides sollte sichtbar sein.
+                // Klebt der Rhythmus an 3,5 bzw. 8,0/min, wollte die Schleife noch weiter —
+                // entweder ist das echt, oder die Messung stimmt nicht. Beides sollte sichtbar sein.
                 rows.push(['Hinweis', `${summary.bandLimited}× an der Frequenzgrenze gedeckelt`]);
             }
             rows.push(['Sprach-Hinweise', `${summary.speechCues}×`]);

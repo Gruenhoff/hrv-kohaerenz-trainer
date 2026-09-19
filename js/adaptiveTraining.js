@@ -19,8 +19,9 @@
  * Zwei Wächter:
  *  · Datenqualität — bei flacher RSA-Welle ist der Scheitelzeitpunkt nicht
  *    bestimmbar, dann wird nicht gesteuert.
- *  · Frequenzband — ±1,0 Atemzüge/min um den Protokoll-1/2-Wert. Nur auf der
- *    Gesamtfrequenz; Verhältnis und Binnenaufteilung bleiben darin frei.
+ *  · Frequenzgrenzen — absolut 3,5 bis 8,0 Atemzüge/min, NICHT relativ zum
+ *    Startwert. Dazwischen regelt die Schleife frei; Verhältnis und
+ *    Binnenaufteilung sowieso.
  *
  * Der Startpunkt kommt immer aus Protokoll 1/2 und wird nie zurückgeschrieben:
  * jede Session ist eine unabhängige Messung der Tagesresonanz.
@@ -54,15 +55,13 @@ const MAX_CORRECTION_MS  = 300;    // Deckel je Zyklus
 const DEADZONE_RR_FRACTION = 0.5;
 
 // ─── Grenzen ─────────────────────────────────────────────────────────────────
-// Nur auf der GESAMTFREQUENZ, nicht auf einzelnen Phasen: ±1,0 Atemzüge/min um den
-// Protokoll-1-Wert. Das kodiert die Annahme, dass die Resonanz von Tag zu Tag nur
-// leicht schwankt — wandert die Schleife in einer Session weiter, ist das mit hoher
-// Wahrscheinlichkeit ein Messproblem. Verhältnis und Binnenaufteilung bleiben frei.
-const FREQ_BAND_BPM = 1.0;
-// Zusätzlich hart auf den Bereich geklemmt, den Protokoll 1 überhaupt absucht:
-// bei einer gemessenen Resonanz von z.B. 4,75/min reichte das reine ±1-Band sonst
-// bis 3,75/min hinunter — also in einen Bereich, der nie als Kandidat geprüft wurde.
-const ABS_MIN_BPM = 4.5;
+// Absolute Grenzen auf der GESAMTFREQUENZ, kein Band um den Startwert mehr.
+// Das frühere ±1,0-Band hat in tief parasympathischen Sessions fast jeden Zyklus
+// gedeckelt (bis zu 115× in 20 Minuten): die Schleife wollte langsamer, als das
+// Band erlaubte. Nach unten gilt jetzt nur noch 3,5 Atemzüge/min — bewusst unter
+// dem Bereich, den Protokoll 1 absucht (4,5–8,0). Die Obergrenze bleibt beim
+// oberen Ende des Protokoll-1-Rasters.
+const ABS_MIN_BPM = 3.5;
 const ABS_MAX_BPM = 8.0;
 const MIN_INHALE_MS = 1500;  // absolute Atembarkeits-Untergrenzen
 const MIN_EXHALE_MS = 2000;
@@ -109,14 +108,13 @@ export class AdaptiveTraining {
         this._settleMs = SETTLE_MS;           // Instanzfelder für Testbarkeit
         this._edrBaselineMs = EDR_BASELINE_MS;
 
-        // Frequenzband um den Protokoll-1/2-Wert. Kürzerer Zyklus = höhere Frequenz,
-        // deshalb liefert die obere bpm-Grenze die untere Zyklusgrenze.
+        // Absolute Zyklusgrenzen. Kürzerer Zyklus = höhere Frequenz, deshalb liefert
+        // die obere bpm-Grenze die untere Zyklusgrenze. Ein Startwert außerhalb
+        // sperrt sich nicht selbst aus.
         const baseBpm = 60000 / Math.max(1, cycleMs(baseRhythm));
-        const fastBpm = Math.min(baseBpm + FREQ_BAND_BPM, ABS_MAX_BPM);
-        const slowBpm = Math.max(baseBpm - FREQ_BAND_BPM, ABS_MIN_BPM);
         this._cycleBounds = [
-            60000 / Math.max(fastBpm, baseBpm), // nie enger als der Startwert selbst
-            60000 / Math.min(slowBpm, baseBpm),
+            60000 / Math.max(ABS_MAX_BPM, baseBpm),
+            60000 / Math.min(ABS_MIN_BPM, baseBpm),
         ];
 
         this._active = false;
@@ -521,7 +519,7 @@ export class AdaptiveTraining {
     }
 
     /**
-     * Setzt die Segmentlänge auf `target`, soweit Frequenzband und Mindestdauern es
+     * Setzt die Segmentlänge auf `target`, soweit Frequenzgrenzen und Mindestdauern es
      * zulassen, und verteilt die Änderung proportional auf die Phasen des Segments.
      * @returns {number} tatsächlich angewandte Änderung in ms (0 = nichts geändert)
      */
