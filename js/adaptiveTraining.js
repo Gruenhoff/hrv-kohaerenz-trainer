@@ -77,6 +77,13 @@ const EDR_SHALLOW_STREAK   = 3;      // so viele Zyklen in Folge, bevor Hinweis 
 const SPEECH_COOLDOWN_MS   = 50000;  // 45–60s Zielkorridor, Mittelwert
 const EDR_QUALITY_TOLERANCE = 0.25;  // erlaubte relative Abweichung implizite-HF vs. echte HF
 
+// ─── Verzögerte Übernahme (Moonbird) ─────────────────────────────────────────
+// Führt ein Haptik-Gerät den Rhythmus mit, kann er nur an einer Zyklusgrenze und erst einen Zyklus
+// nach der Entscheidung wechseln (siehe moonbird.js). Der Pacer zeigt exakt das, was das Gerät atmet;
+// die Schleife entscheidet weiter jeden Zyklus, bündelt die Änderungen aber zu einem Wechsel.
+const EPOCH_TOL_MS               = 150;  // Pacer-Ereignisse kommen bis zu einem Frame nach der Sollzeit
+const MIN_CYCLES_BETWEEN_SWITCHES = 1;   // so viele Zyklen im neuen Rhythmus, bevor der nächste Wechsel angefordert wird
+
 const PHASES = ['inhale', 'holdIn', 'exhale', 'holdOut'];
 
 function clamp(value, min, max) {
@@ -133,8 +140,14 @@ export class AdaptiveTraining {
         // Bedingungen abbilden, die gerade herrschen.
         this._amplitudeRef = [];
 
-        // Gleitende Mediane der gemessenen Zeitversätze je Segment
+        // Gleitende Mediane der gemessenen Zeitversätze je Segment: { lag, len } — len = Länge des
+        // Segments, unter der gemessen wurde (bei verzögerter Übernahme ändert sie sich zwischen den Messungen)
         this._lags = { rising: [], falling: [] };
+
+        // Rhythmus-Epochen: was der Pacer tatsächlich zeigt. Ohne verzögerte Übernahme nur der Startrhythmus.
+        this._epochs = [{ from: -Infinity, rhythm: { ...baseRhythm } }];
+        this._switchInFlight = false;
+        this._cyclesSinceApply = MIN_CYCLES_BETWEEN_SWITCHES;
         this._prevCycle = null; // für den Tal-Versatz, der erst einen Zyklus später messbar ist
 
         // Session-weite Logs für den Abschlussbericht
@@ -154,6 +167,9 @@ export class AdaptiveTraining {
 
         // Callbacks (von app.js gesetzt)
         this.onRhythmChange    = null; // (rhythm) => void — Pacer (neu) starten
+        // Verzögerte Übernahme: (rhythm) => Promise<{ok, effectiveTs?, decoupled?}>. Gesetzt, übernimmt NICHT
+        // onRhythmChange den Wechsel, sondern das Gerät samt Pacer zur Zeit effectiveTs (siehe app.js/moonbird.js).
+        this.requestSwitch     = null;
         this.onCalibrationTick = null; // (elapsedMs, totalMs) => void
         this.onCalibrationDone = null; // () => void
         this.onSpeechCue       = null; // (text) => void
@@ -165,7 +181,7 @@ export class AdaptiveTraining {
 
     async start() {
         this._active = true;
-        this.onRhythmChange?.(this.rhythm);
+        if (!this.requestSwitch) this.onRhythmChange?.(this.rhythm);
         try {
             await this._settlePhase();
             await this._adaptiveLoop();
@@ -208,12 +224,64 @@ export class AdaptiveTraining {
         this._summary.avgReactivityIndex = this._reactivityIndexLog.length
             ? round1(median(this._reactivityIndexLog)) : 0;
         const bpm = r => Math.round(60000 / cycleMs(r) * 10) / 10;
+        const finalRhythm = this.appliedRhythm;
         this._summary.startBreathsPerMin = bpm(this.baseRhythm);
-        this._summary.finalBreathsPerMin = bpm(this.rhythm);
+        this._summary.finalBreathsPerMin = bpm(finalRhythm);
 
-        const result = { rhythm: this.rhythm, startRhythm: this.baseRhythm, ...this._summary };
+        const result = { rhythm: { ...finalRhythm }, startRhythm: this.baseRhythm, ...this._summary };
         await this.db.saveAdaptiveTrainingSession(result).catch(() => {});
         this.onComplete?.(result);
+    }
+
+    /**
+     * Der Rhythmus, den der Pacer (und ein gekoppeltes Gerät) gerade tatsächlich zeigt. Ohne verzögerte Übernahme
+     * ist das der zuletzt entschiedene.
+     */
+    get appliedRhythm() { return this.requestSwitch ? this._epochs[this._epochs.length - 1].rhythm : this.rhythm; }
+
+    /**
+     * Ein Rhythmus gilt ab `effectiveTs` (performance.now()-Zeit des ersten neuen Zyklus). Auch für Erneuerungen der
+     * Moonbird-Session ohne Rhythmusänderung: die verlängerte Pause macht den Zyklus davor für die Messung unbrauchbar.
+     */
+    noteEpoch(effectiveTs, rhythm) {
+        this._epochs.push({ from: effectiveTs, rhythm: { ...rhythm } });
+        this._cyclesSinceApply = 0;
+    }
+
+    _epochAt(ts) {
+        for (let i = this._epochs.length - 1; i >= 0; i--) if (this._epochs[i].from <= ts + EPOCH_TOL_MS) return this._epochs[i];
+        return this._epochs[0];
+    }
+
+    /** true, wenn zwischen Start und Ende des Zyklus ein Wechsel-Zeitpunkt liegt (Zyklus endet mit verlängerter Pause). */
+    _switchWithin(start, end) {
+        return this._epochs.some(e => Number.isFinite(e.from) && e.from > start + EPOCH_TOL_MS && e.from <= end + EPOCH_TOL_MS);
+    }
+
+    /**
+     * Fordert den Wechsel auf den gewollten Rhythmus an, sobald keiner unterwegs ist und der letzte lange genug her ist.
+     * Die Schleife wartet nicht darauf: sie beobachtet weiter, der Wechsel meldet sich mit der Effektivzeit zurück.
+     */
+    _maybeRequestSwitch() {
+        if (this._switchInFlight || this._cyclesSinceApply < MIN_CYCLES_BETWEEN_SWITCHES) return;
+        const applied = this.appliedRhythm;
+        if (PHASES.every(p => applied[p] === this.rhythm[p])) return;
+        const wanted = { ...this.rhythm };
+        this._switchInFlight = true;
+        Promise.resolve(this.requestSwitch(wanted)).then((res) => {
+            this._switchInFlight = false;
+            if (!this._active || !res) return;
+            if (res.ok) this.noteEpoch(res.effectiveTs, wanted);
+            if (res.decoupled) this._decoupleDevice();
+        }, () => { this._switchInFlight = false; });
+    }
+
+    /** Das Gerät ist ausgefallen: ab jetzt gilt jede Änderung sofort im Pacer. */
+    _decoupleDevice() {
+        if (!this.requestSwitch) return;
+        this.requestSwitch = null;
+        this.noteEpoch(performance.now(), this.rhythm);
+        this.onRhythmChange?.(this.rhythm);
     }
 
     /** Von app.js bei jedem BreathPacer.onPhaseChange aufzurufen */
@@ -311,7 +379,9 @@ export class AdaptiveTraining {
         }
 
         this._summary.cyclesObserved++;
-        return { inhaleStart, inhaleEndTs, risingEnd, fallingEnd, amplitude, reactivity, edrRange, nextInhaleEvt };
+        const rhythm = this._epochAt(inhaleStart).rhythm;
+        const switchEnd = this._switchWithin(inhaleStart, fallingEnd);
+        return { inhaleStart, inhaleEndTs, risingEnd, fallingEnd, amplitude, reactivity, edrRange, nextInhaleEvt, rhythm, switchEnd };
     }
 
     /**
@@ -449,16 +519,20 @@ export class AdaptiveTraining {
 
             // Der Tal-Versatz gehört zum VORIGEN Zyklus — erst jetzt liegen die
             // Schläge nach dessen Ende vor (siehe _fallingLag).
-            const risingLag  = this._risingLag(cycle);
-            const fallingLag = this._prevCycle ? this._fallingLag(this._prevCycle, cycle) : null;
+            // Ein Zyklus, der mit einem Rhythmuswechsel endet, hat eine verlängerte Pause: nicht messen
+            const prev = this._prevCycle;
+            const risingLag  = cycle.switchEnd ? null : this._risingLag(cycle);
+            const fallingLag = prev && !prev.switchEnd ? this._fallingLag(prev, cycle) : null;
             this._prevCycle = cycle;
+            if (cycle.inhaleStart + EPOCH_TOL_MS >= this._epochs[this._epochs.length - 1].from) this._cyclesSinceApply++;
 
             let rhythmChanged = false;
             if (this._dataUsable(cycle)) {
-                rhythmChanged = this._correctSegment('rising',  risingLag,  cycle)  || rhythmChanged;
-                rhythmChanged = this._correctSegment('falling', fallingLag, cycle) || rhythmChanged;
+                rhythmChanged = this._correctSegment('rising',  risingLag,  cycle, cycle.rhythm) || rhythmChanged;
+                rhythmChanged = this._correctSegment('falling', fallingLag, cycle, prev?.rhythm ?? cycle.rhythm) || rhythmChanged;
             }
-            if (rhythmChanged) this.onRhythmChange?.(this.rhythm); // gebündelt: max. 1× pro Zyklus
+            if (this.requestSwitch) this._maybeRequestSwitch();
+            else if (rhythmChanged) this.onRhythmChange?.(this.rhythm); // gebündelt: max. 1× pro Zyklus
 
             this._checkEdrFeedback(cycle.edrRange);
             this.onCycleComplete?.(cycle);
@@ -489,14 +563,24 @@ export class AdaptiveTraining {
      * @param {number|null} lagMs positiv = Extremwert lag nach der Grenze = Segment zu kurz
      * @returns {boolean} true, wenn der Rhythmus geändert wurde
      */
-    _correctSegment(segment, lagMs, cycle) {
+    _correctSegment(segment, lagMs, cycle, frameRhythm = cycle.rhythm ?? this.rhythm) {
         if (lagMs === null || !Number.isFinite(lagMs)) return false;
 
+        const phases = segment === 'rising' ? ['inhale', 'holdIn'] : ['exhale', 'holdOut'];
+        const current = phases.reduce((sum, p) => sum + this.rhythm[p], 0);
+        if (current <= 0) return false;
+
         const lags = this._lags[segment];
-        lags.push(lagMs);
+        lags.push({ lag: lagMs, len: phases.reduce((sum, p) => sum + frameRhythm[p], 0) });
         if (lags.length > LAG_MEDIAN_N) lags.shift();
-        const lag = median(lags);
-        if (lag === null) return false;
+        // Ohne verzögerte Übernahme gilt jede Korrektur sofort: Median der gemessenen Versätze. Mit verzögerter
+        // Übernahme wurden die Messungen unter unterschiedlichen Segmentlängen gemacht, und die letzten Korrekturen
+        // sind noch nicht im Pacer: gerechnet wird mit der Soll-Länge (Länge + Versatz), Median darüber, und die
+        // Differenz zur aktuell gewollten Länge ist der noch offene Rest — so wird nichts doppelt korrigiert.
+        const lag = this.requestSwitch
+            ? median(lags.map(l => l.len + l.lag)) - current
+            : median(lags.map(l => l.lag));
+        if (lag === null || !Number.isFinite(lag)) return false;
 
         // Totzone: unterhalb eines halben RR-Intervalls ist der Versatz nicht von der
         // Messauflösung zu unterscheiden. Hier steht der Rhythmus still — das ist der
@@ -504,10 +588,6 @@ export class AdaptiveTraining {
         const meanHR = this.hrv.meanHRInWindow(cycle.inhaleStart, cycle.fallingEnd);
         const meanRR = meanHR && meanHR > 0 ? 60000 / meanHR : 1000;
         if (Math.abs(lag) < meanRR * DEADZONE_RR_FRACTION) return false;
-
-        const phases = segment === 'rising' ? ['inhale', 'holdIn'] : ['exhale', 'holdOut'];
-        const current = phases.reduce((sum, p) => sum + this.rhythm[p], 0);
-        if (current <= 0) return false;
 
         const wanted = clamp(lag * CORRECTION_DAMPING, -MAX_CORRECTION_MS, MAX_CORRECTION_MS);
         const next = this._applySegmentLength(phases, current, Math.round(current + wanted));

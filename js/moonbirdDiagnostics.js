@@ -1,23 +1,26 @@
 /**
  * Moonbird-Diagnose
  *
- * Ziel: messen, wie exakt das Moonbird die Frequenz abbildet, die der Pacer
- * visuell zeigt — und alle Hemmnisse aufdecken (BLE-Latenz, Geräteuhr,
- * Atemzug-Genauigkeit, Rhythmus-Wechsel, EKG-Stream, Hauptthread, Hintergrund).
+ * Ziel: messen, wie exakt das Moonbird den Rhythmus atmet, den der Pacer visuell zeigt —
+ * und alle Hemmnisse aufdecken (BLE-Latenz, Geräteuhr, Phasenlage und Drift der Langsession,
+ * Pause beim Rhythmuswechsel, EKG-Stream, Hauptthread, Hintergrund).
  *
  * Aufbau:
  *  1. analyzeTrace()      — wertet das Zeitprotokoll (moonbird.trace) aus, pure Funktion
- *  2. MoonbirdDiagnostics — aktive Messungen (Latenz, Uhr, Genauigkeit, Spiegeltest)
+ *  2. MoonbirdDiagnostics — aktive Messungen (Latenz, Uhr, Genauigkeit, Synchron-Test, Wechsel-Test)
  *  3. buildFindings()     — regelbasierte Befunde + Empfehlungen
  *  4. renderText/renderHTML — Bericht
  */
 import { MoonbirdController } from './moonbird.js';
 
-const { MIN_SESSION_MS, END_MARGIN_MS, CMD_OVERHEAD_MS } = MoonbirdController.constants;
+const { MIN_SESSION_MS } = MoonbirdController.constants;
 
-// Toleranzen für "synchron": Start ±150 ms, Ende ±250 ms (unterhalb der Wahrnehmung eines Atemrhythmus)
+const END_MARGIN_MS = 200;      // Ein-Atemzug-Sessions (Genauigkeits-Test): Dauer endet so weit vor dem Ausatem-Ende
+const GATE_LEAD_MS = 600;       // Benachrichtigungen so lange vor dem erwarteten Ende wieder an
+
+// Toleranzen: Startlage ±150 ms, zusätzliche Pause beim Wechsel bis 150 ms (unterhalb der Wahrnehmung eines Atemrhythmus)
 const START_TOL_MS = 150;
-const END_TOL_MS = 250;
+const PAUSE_TOL_MS = 150;
 
 // ─── Statistik-Helfer ──────────────────────────────────────────────────────
 
@@ -50,266 +53,145 @@ const cycleOf = (r) => r ? r.inhale + (r.holdIn || 0) + r.exhale + (r.holdOut ||
 // ─── 1. Auswertung des Zeitprotokolls ──────────────────────────────────────
 
 /**
- * Ordnet jedem Einatem-Signal des Pacers den Moonbird-Atemzug zu und misst Verzug,
- * Atemzug-Länge, Ende-Versatz und Zyklus-Frequenz.
+ * Wertet das Zeitprotokoll einer Langsession-Sitzung aus: Sessions, Rhythmuswechsel (Pause, Funkzeit,
+ * Ende-Ereignis) und ob der Pacer auf dem Raster des Moonbird läuft. Reine Funktion.
  * @param {object[]} traceIn  moonbird.trace (oder ein Ausschnitt davon)
- * @param {{calibration?: {startBias?: number, endLatency?: number}}} [opts]
  */
-export function analyzeTrace(traceIn, opts = {}) {
+export function analyzeTrace(traceIn) {
     const trace = [...traceIn].sort((a, b) => a.t - b.t);
-    const cal = opts.calibration || {};
-
-    const cmds = trace.filter(e => e.type === 'cmd');
-    const ack = cmds.filter(c => c.tWritten != null && c.tSend != null).map(c => c.tWritten - c.tSend);
-    const oneWay = ack.length ? stats(ack).p50 / 2 : 50;
-    const startBias = cal.startBias ?? oneWay;       // Befehl gesendet → Gerät beginnt
-    const endLatency = cal.endLatency ?? oneWay;     // Gerät beendet → Ereignis in der App
-
-    const phaseEvents = trace.filter(e => e.type === 'pacer');
-    const inhales = phaseEvents.filter(e => e.phase === 'inhale');
-    const rhythms = trace.filter(e => e.type === 'rhythm' || e.type === 'follow');
-    const starts = cmds.filter(c => c.op === 0x07 && c.reply?.startsWith('870100'));
-    const ends = trace.filter(e => e.type === 'end');
     const sessions = trace.filter(e => e.type === 'session');
+    const switchEvents = trace.filter(e => e.type === 'switch');
+    const inhales = trace.filter(e => e.type === 'pacer' && e.phase === 'inhale');
     const decisions = trace.filter(e => e.type === 'decision');
+    const cmds = trace.filter(e => e.type === 'cmd');
 
-    // Start → Einatem-Signal zuordnen. Mit Vorhalt wird der Startbefehl VOR dem Signal gesendet (session.early):
-    // dann gehört er zum nächsten Signal, sonst zum vorangegangenen.
-    const startInfos = starts.map(st => {
-        const sess = sessions.find(x => x.tReply != null && Math.abs(x.tReply - st.tReply) < 5) ?? null;
-        return { st, sess, early: !!sess?.early };
+    // Pacer gegen das Raster des Moonbird: Einatem-Ereignis vs. Sollzeit (Session-Anfang + k · Zyklus).
+    // Erwartet 0–16 ms (ein Bildwechsel); mehr heißt, dass der Pacer nicht im Takt des Geräts läuft.
+    const pacerOffsets = [];
+    sessions.forEach((sess, i) => {
+        const nextAnchor = sessions[i + 1]?.anchor ?? Infinity;
+        const cyc = cycleOf(sess.rhythm);
+        inhales.filter(e => e.t >= sess.anchor - 200 && e.t < nextAnchor - 200).forEach(e => {
+            const k = Math.round((e.t - sess.anchor) / cyc);
+            pacerOffsets.push(e.t - (sess.anchor + k * cyc));
+        });
     });
-    const byCycle = new Map();
-    for (const si of startInfos) {
-        let idx = -1;
-        if (si.early) idx = inhales.findIndex(e => e.t >= si.st.tSend - 50);
-        else for (let i = inhales.length - 1; i >= 0; i--) if (inhales[i].t <= si.st.tSend + 50) { idx = i; break; }
-        if (idx >= 0 && !byCycle.has(idx)) byCycle.set(idx, si);
-    }
-    const leadWin = Math.max(0, ...sessions.map(x => x.lead || 0)) + 120;   // Entscheidungen zum Start liegen vor dem Signal
 
-    const cycles = [];
-    for (let i = 0; i < inhales.length; i++) {
-        const tP = inhales[i].t;
-        const tNext = inhales[i + 1]?.t ?? null;
-        const rhythm = [...rhythms].reverse().find(r => r.t <= tP + 60)?.rhythm ?? null;
-        const inCycle = (e) => e.t >= tP - leadWin && (tNext === null || e.t < tNext - leadWin);
-        const tHoldOut = phaseEvents.find(e => e.phase === 'holdOut' && e.t > tP && (tNext === null || e.t < tNext))?.t ?? null;
-
-        const c = {
-            i, tP, tNext, rhythm,
-            pacerPeriod: tNext ? tNext - tP : null,
-            pacerBreath: breathOf(rhythm),
-            matched: false,
-            flags: {},
-        };
-        decisions.filter(inCycle).forEach(d => { if (d.what !== 'schedule' && d.what !== 'end-bias') c.flags[d.what] = (c.flags[d.what] || 0) + 1; });
-
-        const si = byCycle.get(i);
-        if (si) {
-            const { st: start, sess } = si;
-            const endEvt = ends.find(e => e.t > start.tSend);
-            c.matched = true;
-            c.early = si.early;
-            c.lead = sess?.lead || 0;
-            c.tSend = start.tSend;
-            c.cmdLag = start.tSend - tP;                       // negativ: mit Vorhalt vor dem Einatem-Signal gesendet
-            c.ack = start.tWritten != null ? start.tWritten - start.tSend : null;
-            c.devStart = start.tSend + startBias;              // geschätzter Beginn am Gerät
-            c.startLag = c.devStart - tP;                      // Versatz zum Pacer-Einatmen
-            c.progBreath = sess?.prog?.breath ?? null;         // Atemzug-Länge, die dem Gerät befohlen wurde
-            if (endEvt) {
-                c.devEnd = endEvt.t - endLatency;
-                c.breathMeasured = c.devEnd - c.devStart;
-                const pacerEnd = tHoldOut ?? tNext;            // Ende der Ausatmung im Pacer
-                if (pacerEnd != null) c.endOffset = c.devEnd - pacerEnd;
-            }
-        }
-        cycles.push(c);
-    }
-
-    // Zyklusdauer Gerät vs. Pacer (nur benachbarte, zugeordnete Zyklen)
-    for (let i = 0; i < cycles.length - 1; i++) {
-        const a = cycles[i], b = cycles[i + 1];
-        if (a.matched && b.matched && a.pacerPeriod != null) {
-            a.devPeriod = b.devStart - a.devStart;
-            a.periodErr = a.devPeriod - a.pacerPeriod;
-        }
-    }
-
-    const full = cycles.filter(c => c.tNext != null);   // vollständige Pacer-Zyklen
-    const m = cycles.filter(c => c.matched);
-    // Rhythmuswechsel (reprepare) verschiebt den Start sprunghaft — für Frequenz/Drift ausklammern
-    const clean = m.filter(c => !c.flags.reprepare);
-    // Die ersten Atemzüge sind die Lernphase des Ausgleichs (Lücke wird gemessen) — für Drift/Streuung getrennt betrachten
-    const steadyFrom = full.length >= 6 ? 2 : 0;
-    const steady = clean.filter(c => c.i >= steadyFrom);
-    const nextOf = (c) => cycles[c.i + 1];
-    const periodPairs = cycles.filter(c => c.devPeriod != null && !c.flags.reprepare && !nextOf(c)?.flags.reprepare);
-    const sumDev = periodPairs.reduce((s, c) => s + c.devPeriod, 0);
-    const sumPacer = periodPairs.reduce((s, c) => s + c.pacerPeriod, 0);
+    const switches = switchEvents.map((x) => ({
+        t: x.tRequest ?? x.t,
+        ok: !!x.ok,
+        renew: !!x.renew,
+        reason: x.reason || null,
+        stage: x.stage || null,
+        from: x.from, to: x.to,
+        replans: x.replans || 0,
+        holdOldMs: x.from?.holdOut || 0,                                                   // Pause des alten Rhythmus nach der Ausatmung
+        extraPauseMs: x.extraPauseMs ?? null,                                              // zusätzliche Pause über die normale hinaus
+        silentMs: x.S != null && x.E != null ? x.S - x.E : null,                           // Moonbird ruht von Ausatem-Ende bis Start
+        endLatencyMs: x.tEnd != null && x.E != null && !x.endLost ? x.tEnd - x.E : null,   // Ende-Ereignis nach dem erwarteten Ausatem-Ende
+        endLost: !!x.endLost,
+        stopLeadMs: x.tStop != null && x.E != null ? x.E - x.tStop : null,                 // so früh vor dem Ausatem-Ende war der Stopp bestätigt
+        waitMs: x.S != null ? x.S - (x.tRequest ?? x.t) : null,                            // Anforderung → neuer Rhythmus beginnt
+    }));
+    const okSw = switches.filter(x => x.ok);
 
     const decisionCounts = {};
     decisions.forEach(d => { decisionCounts[d.what] = (decisionCounts[d.what] || 0) + 1; });
 
-    const good = full.filter(c => c.matched && Math.abs(c.startLag) <= START_TOL_MS
-        && (c.endOffset == null || Math.abs(c.endOffset) <= END_TOL_MS));
-
-    const rhythmChanges = cycles.filter((c, i) => i > 0 && c.rhythm && cycles[i - 1].rhythm && cycleOf(c.rhythm) !== cycleOf(cycles[i - 1].rhythm)).length;
-    const overheadEvents = decisions.filter(d => d.what === 'overhead');
-    const lastOverhead = overheadEvents[overheadEvents.length - 1] || null;
-
     const summary = {
-        rhythmChanges,
-        gapEstMs: lastOverhead ? lastOverhead.gap : null,
-        overheadMs: lastOverhead ? lastOverhead.to : null,
-        pacerCycles: full.length,
-        matchedCycles: full.filter(c => c.matched).length,
-        oneWayMs: oneWay,
-        startBias, endLatency,
-        calibrated: cal.startBias != null,
-        startLag: stats(m.map(c => c.startLag)),
-        cmdLag: stats(m.map(c => c.cmdLag)),
-        ack: stats(m.map(c => c.ack)),
-        breathError: stats(m.filter(c => c.breathMeasured != null && c.progBreath != null).map(c => c.breathMeasured - c.progBreath)),
-        breathDeficit: stats(m.filter(c => c.pacerBreath != null && c.progBreath != null).map(c => c.pacerBreath - c.progBreath)),
-        endOffset: stats(m.map(c => c.endOffset)),
-        periodErr: stats(periodPairs.map(c => c.periodErr)),
-        freqErrorPct: sumPacer ? (sumDev / sumPacer - 1) * 100 : null,
-        startLagClean: stats(clean.map(c => c.startLag)),
-        startLagSteady: steadyFrom ? stats(steady.map(c => c.startLag)) : null,
-        startLagMax: m.length ? Math.max(...m.map(c => c.startLag)) : null,
-        leadMs: m.length ? stats(m.map(c => c.lead || 0)).mean : 0,
-        lagSlope: slope(steady.map(c => c.i), steady.map(c => c.startLag), 3),
+        pacerCycles: Math.max(0, inhales.length - 1),
+        sessions: sessions.length,
+        switches: switches.length,
+        switchesOk: okSw.length,
+        switchesFailed: switches.length - okSw.length,
+        renewals: switches.filter(x => x.renew).length,
+        replans: switches.reduce((sum, x) => sum + x.replans, 0),
+        extraPause: stats(okSw.map(x => x.extraPauseMs)),
+        silent: stats(okSw.map(x => x.silentMs)),
+        endLatency: stats(okSw.map(x => x.endLatencyMs)),
+        stopLead: stats(switches.map(x => x.stopLeadMs)),
+        wait: stats(okSw.map(x => x.waitMs)),
+        endLost: switches.filter(x => x.endLost).length,
+        noPauseCount: okSw.filter(x => (x.extraPauseMs ?? 0) <= 30).length,
+        endBias: stats(decisions.filter(d => d.what === 'end-bias').map(d => d.bias)),   // Ende-Ereignis − erwartetes Ausatem-Ende (auch beim Stopp am Trainingsende)
+        pacerOffset: stats(pacerOffsets),
+        ack: stats(cmds.filter(c => c.tWritten != null && c.tSend != null).map(c => c.tWritten - c.tSend)),
         decisionCounts,
-        startOkPct: m.length ? 100 * m.filter(c => Math.abs(c.startLag) <= START_TOL_MS).length / m.length : null,
-        mirrorQualityPct: full.length ? 100 * good.length / full.length : null,
-        reprepareCost: null,
     };
-
-    // Kosten der Neuvorbereitung bei Rhythmuswechsel: Mehrverzug der Zyklen mit 'reprepare'
-    const withRe = m.filter(c => c.flags.reprepare).map(c => c.startLag);
-    const withoutRe = m.filter(c => !c.flags.reprepare).map(c => c.startLag);
-    if (withRe.length && withoutRe.length) {
-        summary.reprepareCost = stats(withRe).mean - stats(withoutRe).mean;
-        summary.reprepareCount = withRe.length;
-    }
-    return { cycles, summary };
+    return { switches, summary };
 }
 
 /** Wertet das zuletzt aufgezeichnete echte Training (nicht die Diagnose-Läufe) aus. */
-export function analyzeLastTraining(trace, calibration = null) {
+export function analyzeLastTraining(trace) {
     let from = -1;
-    for (let i = trace.length - 1; i >= 0; i--) if (trace[i].type === 'follow' && trace[i].source !== 'diag') { from = i; break; }
+    for (let i = trace.length - 1; i >= 0; i--) if (trace[i].type === 'follow' && trace[i].source === 'training') { from = i; break; }
     const slice = from < 0 ? [] : trace.slice(from);
-    if (!slice.some(e => e.type === 'pacer')) return { error: 'Kein Training mit Moonbird aufgezeichnet.' };
-    return { analysis: analyzeTrace(slice, { calibration }) };
+    if (!slice.some(e => e.type === 'session')) return { error: 'Kein Training mit Moonbird aufgezeichnet.' };
+    return { analysis: analyzeTrace(slice) };
 }
 
 // ─── 3. Befunde ────────────────────────────────────────────────────────────
 
 const F = (severity, title, detail, suggestion = null) => ({ severity, title, detail, suggestion });
 
-/** Befunde aus einer Trace-Auswertung (Spiegeltest oder Live-Training). */
+/** Befunde aus einer Trace-Auswertung (Wechsel-Test oder Live-Training). */
 export function traceFindings(a, label) {
     const s = a.summary;
     const out = [];
     const L = label ? `[${label}] ` : '';
-    if (!s.pacerCycles) return [F('info', `${L}Keine vollständigen Pacer-Zyklen aufgezeichnet`, 'Für eine Auswertung sind mindestens zwei Einatem-Signale nötig.')];
+    if (!s.sessions) return [F('info', `${L}Kein Moonbird-Lauf aufgezeichnet`, 'Für eine Auswertung muss eine Session gestartet worden sein.')];
 
-    const missed = s.pacerCycles - s.matchedCycles;
-    if (missed > 0) {
-        out.push(F(missed > s.pacerCycles / 4 ? 'bad' : 'warn', `${L}${missed} von ${s.pacerCycles} Atemzügen ohne Moonbird`,
-            'Zu diesen Einatem-Signalen wurde kein Start bestätigt.',
-            'Ursachen prüfen: Moonbird beim Einatem-Signal noch im vorigen Atemzug (Halt nach Ausatmen zu kurz), abgelehnte Befehle, Verbindungsabbruch.'));
-    }
-
-    if (s.startLag) {
-        const base = s.startLagSteady || s.startLagClean || s.startLag;   // Lernphase und Rhythmuswechsel zählen separat
-        const m = base.mean, sd = base.sd;
-        const sev = Math.abs(m) > 250 ? 'bad' : Math.abs(m) > START_TOL_MS ? 'warn' : 'ok';
-        out.push(F(sev, `${L}Start: Moonbird beginnt Ø ${sgn(m)} ms nach dem Pacer-Einatmen (σ ${r0(sd)} ms)`,
-            (s.leadMs > 0
-                ? `Startbefehl wird ${r0(s.leadMs)} ms VOR dem Einatem-Signal gesendet (Vorhalt), Gerätestart ${r0(s.startBias)} ms nach dem Senden.`
-                : `Davon ${r0(s.cmdLag?.mean)} ms Wartezeit in der App bis zum Senden, ${r0(s.ack?.mean)} ms Schreib-Bestätigung, Rest Gerätestart.`)
-            + `${s.calibrated ? ' (kalibriert über Geräteuhr)' : ' (geschätzt, ohne Kalibrierung)'} Schätzunsicherheit ca. ±${r0(s.oneWayMs)} ms.`,
-            sev === 'ok' ? null : (Math.abs(m) <= 400
-                ? `Vorhalt: den Start-Befehl ca. ${r0(m)} ms VOR dem Einatem-Signal senden (Zeitpunkt aus dem Pacer-Zyklus vorausberechnen).`
-                : 'Zuerst die Ursache des großen Verzugs beheben (Datenstrom-Befund, „Moonbird noch im vorigen Atemzug"); ein Vorhalt hilft erst bei kleinem, stabilem Versatz.')));
-        if (s.startLagMax > 350 && s.startLagSteady) {
-            out.push(F('info', `${L}Einschwingphase: Startverzug bis +${r0(s.startLagMax)} ms in den ersten Atemzügen, danach Ø ${sgn(s.startLagSteady.mean)} ms`,
-                'Der Ausgleich lernt in den ersten 2–3 Atemzügen die reale Lücke zwischen zwei Atemzügen; der gelernte Wert wird gespeichert und beim nächsten Training gleich verwendet.'));
+    if (s.switches === 0) {
+        out.push(F('ok', `${L}Keine Rhythmuswechsel: das Moonbird atmete durchgehend im exakten Takt`,
+            'In der Langsession läuft das Moonbird auf seiner eigenen Uhr — ohne Funkverkehr und ohne Kürzung einzelner Atemzüge.'));
+    } else {
+        if (s.switchesFailed) {
+            const reasons = [...new Set(a.switches.filter(x => !x.ok).map(x => x.reason || 'unbekannt'))].join('; ');
+            out.push(F('bad', `${L}${s.switchesFailed} von ${s.switches} Rhythmuswechseln fehlgeschlagen`,
+                `Grund: ${reasons}. Der Pacer blieb dabei beim alten Rhythmus (bzw. lief ohne Moonbird weiter).`,
+                'Fehlerdetails im Rohprotokoll (JSON-Export) ansehen; Verbindung und Abstand prüfen.'));
         }
-        if (sd > 80) {
-            out.push(F('warn', `${L}Startzeitpunkt schwankt (σ ${r0(sd)} ms, max ${sgn(base.max)} ms)`,
-                'Ein fester Vorhalt kann die Streuung nicht beseitigen — sie stammt aus BLE-Übertragung/Verbindungsintervall.',
-                'Latenztest (mit/ohne EKG-Stream) auswerten; ggf. EKG-Stream im Moonbird-Betrieb entlasten, Handy-Energiesparen aus.'));
+        if (s.switchesOk && s.extraPause) {
+            const ep = s.extraPause;
+            const sev = ep.max <= PAUSE_TOL_MS ? 'ok' : ep.max <= 400 ? 'info' : 'warn';
+            const holds = [...new Set(a.switches.filter(x => x.ok).map(x => Math.round(x.holdOldMs)))].join('/');
+            out.push(F(sev, `${L}${s.switchesOk} Rhythmuswechsel: zusätzliche Pause Ø ${r0(ep.mean)} ms (max ${r0(ep.max)} ms), ${s.noPauseCount} davon ohne spürbare Pause`,
+                `Zwischen Ausatem-Ende und neuem Start liegen Ø ${r0(s.silent?.mean)} ms (Ende melden, Programm setzen, Start dauern mindestens so lange; die reguläre Pause des Rhythmus beträgt ${holds} ms). Nur der Überschuss verlängert die Pause einmalig. Der Pacer bleibt in dieser Pause stehen und beginnt genau mit dem Moonbird.`,
+                sev === 'warn' ? `Ein Halt nach Ausatmen von ≥ ${r0(s.silent?.mean)} ms macht den Wechsel unmerklich; alternativ Wechsel seltener zulassen.` : null));
+        }
+        if (s.endLost) {
+            out.push(F('info', `${L}Ende-Ereignis ${s.endLost}× nicht angekommen — Status-Rückfall hat übernommen`,
+                'Das Session-Ende wurde dann per Statusabfrage erkannt; der Wechsel wird dadurch nicht später, solange die Pause die Wartezeit abdeckt.'));
+        }
+        if (s.replans) {
+            out.push(F('warn', `${L}${s.replans}× kam der Stopp zu spät für das geplante Zyklusende`,
+                'Der Wechsel musste auf das nächste Zyklusende ausweichen; der Pacer stand dadurch länger in der Pause.',
+                'Funkverbindung prüfen (Latenztest); der Stopp muss ca. 0,6 s vor dem Ausatem-Ende am Moonbird sein.'));
+        }
+        if (s.endLatency) {
+            out.push(F('info', `${L}Ende-Ereignis kommt Ø ${sgn(s.endLatency.mean)} ms nach dem erwarteten Ausatem-Ende (σ ${r0(s.endLatency.sd)} ms)`,
+                'Enthält Funklaufzeit und die Abweichung zwischen Geräteuhr-Raster und Pacer-Raster; bestimmt, wann Programm und Start gesendet werden können.'));
         }
     }
 
-    if (s.lagSlope != null && Math.abs(s.lagSlope) > 15) {
-        out.push(F('bad', `${L}Versatz wächst: ${sgn(s.lagSlope)} ms pro Atemzug`,
-            'Das Moonbird läuft dem Pacer zunehmend hinterher bzw. voraus — der Rhythmus stimmt nicht.',
-            'Meist ist der Halt nach Ausatmen kürzer als die Befehlslaufzeit oder das Ende-Ereignis kommt spät (siehe Entscheidungs-Zähler).'));
+    if (s.endBias && s.endBias.n >= 1 && Math.abs(s.endBias.mean) > 450) {
+        out.push(F('bad', `${L}Session-Ende liegt Ø ${sgn(s.endBias.mean)} ms neben dem erwarteten Ausatem-Ende`,
+            'Das Modell der Geräte-Abfolge (Einatmen → Halten → Ausatmen → Pause) stimmt dann nicht mit dem Moonbird überein — Wechsel warten unnötig, und der Rhythmus liegt ggf. um die Pause versetzt.',
+            'Genau diese Zahl aus dem Bericht mitteilen (Halt nach Ausatmen des Test-Rhythmus vergleichen).'));
     }
 
-    if (s.freqErrorPct != null) {
-        const ae = Math.abs(s.freqErrorPct);
-        const sev = ae > 1 ? 'bad' : ae > 0.3 ? 'warn' : 'ok';
-        out.push(F(sev, `${L}Zyklus-Frequenz: Moonbird ${s.freqErrorPct > 0 ? '+' : ''}${s.freqErrorPct.toFixed(2)} % gegenüber Pacer`,
-            `Zyklus-Abweichung Ø ${sgn(s.periodErr?.mean)} ms (σ ${r0(s.periodErr?.sd)} ms).`,
-            sev === 'ok' ? null : 'Gerätedauer je Atemzug und Wartezeit zwischen den Atemzügen prüfen (Atemzug-Test, Halt-Ausgleich).'));
-    }
-
-    if (s.breathError && Math.abs(s.breathError.mean) > 80) {
-        out.push(F('warn', `${L}Atemzug am Gerät ${sgn(s.breathError.mean)} ms gegenüber Befehl`,
-            `σ ${r0(s.breathError.sd)} ms. Das Gerät hält die befohlene Länge nicht exakt ein (oder Ende-Latenz falsch geschätzt).`,
-            'Kalibrierung (Uhren-Test) durchführen; wirkt der Fehler konstant, kann er in der Dauer-Berechnung ausgeglichen werden.'));
-    }
-    if (s.breathDeficit && s.breathDeficit.mean > 20) {
-        out.push(F('info', `${L}Ausatmung am Moonbird um Ø ${r0(s.breathDeficit.mean)} ms gekürzt`,
-            `Zwischen zwei Atemzügen vergehen ${s.gapEstMs != null ? r0(s.gapEstMs) + ' ms (gemessen)' : 'ca. ' + CMD_OVERHEAD_MS + ' ms (Annahme)'} für Ende-Ereignis, Programm setzen und Start. Ohne Halt nach Ausatmen wird die Ausatmung am Moonbird um diese Zeit gekürzt, damit der Rhythmus nicht driftet.`,
-            'Bei Rhythmen ohne Halt lässt sich das nur durch früheres Vorbereiten (Programm während der letzten Ausatmung setzen) vermeiden — vom Gerät aktuell nicht erlaubt (Programm nur im Leerlauf).'));
-    }
-    if (s.endOffset && Math.abs(s.endOffset.mean) > END_TOL_MS) {
-        // Erwartet: Das Moonbird endet um die bewusste Kürzung (Totzeit) früher als der Pacer
-        const expected = s.breathDeficit && s.breathDeficit.mean > 100 ? -s.breathDeficit.mean : 0;
-        const unexplained = s.endOffset.mean - expected;
-        if (Math.abs(unexplained) <= END_TOL_MS) {
-            out.push(F('info', `${L}Ausatmung endet am Moonbird ${r0(Math.abs(s.endOffset.mean))} ms vor dem Pacer-Ende (gewollt)`,
-                `Entspricht der Kürzung um die Totzeit zwischen zwei Atemzügen (${r0(s.breathDeficit.mean)} ms); danach folgt am Moonbird eine kurze Pause bis zum nächsten Einatmen.`));
-        } else {
-            out.push(F('warn', `${L}Ende der Ausatmung ${sgn(s.endOffset.mean)} ms gegenüber Pacer`,
-                `σ ${r0(s.endOffset.sd)} ms${expected ? `; davon ${r0(-expected)} ms durch die gewollte Kürzung erklärt` : ''}.`, 'Startverzug und Atemzug-Länge zusammen prüfen; Ende-Latenz kalibrieren.'));
-        }
+    if (s.pacerOffset && s.pacerOffset.n >= 2) {
+        const po = s.pacerOffset;
+        const bad = Math.abs(po.mean) > 60 || po.p95 > 120;
+        out.push(F(bad ? 'warn' : 'ok', `${L}Pacer-Takt ${bad ? 'weicht vom Moonbird-Raster ab' : 'deckungsgleich mit dem Moonbird-Raster'}: Einatem-Signal Ø ${sgn(po.mean)} ms (p95 ${r0(po.p95)} ms)`,
+            'Abweichung des Einatem-Ereignisses im Pacer von der Sollzeit (Session-Start + Zyklen). Bis ca. 16 ms ist ein Bildwechsel.',
+            bad ? 'Bildrate/Hauptthread prüfen (Umgebungs-Test), App im Vordergrund lassen.' : null));
     }
 
     const d = s.decisionCounts;
-    if (d['wait-running']) {
-        out.push(F('warn', `${L}Moonbird war ${d['wait-running']}× beim Einatem-Signal noch im vorigen Atemzug`,
-            'Der neue Start musste auf das Ende-Ereignis warten (Verzug pro Fall = Restlaufzeit + Befehlslaufzeit).',
-            'Halt nach Ausatmen ≥ ca. 300–400 ms lassen oder den Atemzug am Gerät etwas kürzen.'));
-    }
-    if (d['wait-preparing'] || d['prepare-missing']) {
-        out.push(F('warn', `${L}Programm war beim Einatem-Signal noch nicht gesetzt (${(d['wait-preparing'] || 0) + (d['prepare-missing'] || 0)}×)`,
-            'Nach dem Ende-Ereignis dauert das Setzen des Programms; bei Halt ≈ 0 ist es nicht rechtzeitig fertig.', 'Wie oben: Halt nach Ausatmen vergrößern oder Ausatmung am Gerät kürzen.'));
-    }
-    if (s.rhythmChanges > 0 && s.leadMs > 0) {
-        out.push(F('info', `${L}${s.rhythmChanges} Rhythmuswechsel: das Moonbird übernimmt sie einen Atemzug später`,
-            'Mit Vorhalt wird der nächste Atemzug schon vor dem Einatem-Signal gestartet, also noch mit dem alten Rhythmus. Dafür startet er exakt im Takt; nach einer Verkürzung des Rhythmus entsteht einmalig ein Rückstand von etwa der Differenz.',
-            'Bei den seltenen, kleinen Schritten des Adaptiven Trainings (±0,3 s) ist das unkritisch.'));
-    }
-    if (s.reprepareCost != null) {
-        out.push(F(s.reprepareCost > 100 ? 'warn' : 'info', `${L}Rhythmuswechsel kostet Ø ${sgn(s.reprepareCost)} ms Startverzug (${s.reprepareCount}×)`,
-            'Bei Wechsel direkt nach dem Einatem-Signal muss das Programm neu gesendet werden, bevor der Atemzug startet.',
-            'Alternative: Wechsel erst zum übernächsten Atemzug wirksam machen (Moonbird bleibt dann exakt im Takt, Pacer wechselt eine Runde früher).'));
-    }
-    ['start-rejected', 'fail', 'disconnect'].forEach(k => {
-        if (d[k]) out.push(F('bad', `${L}Ereignis „${k}" ${d[k]}×`, 'Befehl abgelehnt bzw. Verbindung/Steuerung abgebrochen.', 'Fehlerdetails im Rohprotokoll (JSON-Export) ansehen.'));
+    ['fail', 'disconnect'].forEach(k => {
+        if (d[k]) out.push(F('bad', `${L}Ereignis „${k}" ${d[k]}×`, 'Steuerung bzw. Verbindung wurde abgebrochen.', 'Fehlerdetails im Rohprotokoll (JSON-Export) ansehen.'));
     });
-    if (!out.some(f => f.severity !== 'ok' && f.severity !== 'info')) {
-        out.push(F('ok', `${L}Spiegelung im Toleranzbereich`, `${r0(s.mirrorQualityPct)} % der Atemzüge starten ±${START_TOL_MS} ms und enden ±${END_TOL_MS} ms zum Pacer.`));
-    }
     return out;
 }
 
@@ -355,11 +237,11 @@ export function buildFindings(results) {
     const st = results.stream;
     if (st && !st.error && st.idle && st.running) {
         const idle = st.idle.p50, run = st.running.p50;
-        const bad = st.timeouts > 0 || run > Math.max(300, 3 * idle);
+        const bad = st.timeouts > 0 || st.f1Lost || run > Math.max(300, 3 * idle);
         out.push(F(bad ? 'bad' : 'ok',
             `Sensor-Datenstrom: ${st.streamRate != null ? r0(st.streamRate) + ' Notifications/s' : 'kein Datenstrom erkannt'}; Antwortzeit während der Session Median ${r0(run)} ms (Leerlauf ${r0(idle)} ms), p95 ${r0(st.running.p95)} ms`,
-            `${st.timeouts} von ${st.polls} Abfragen ohne Antwort. Ende-Ereignis kam ${sgn(st.f1DelayMs)} ms gegenüber der Erwartung.`,
-            bad ? 'Der Datenstrom verstopft die Funkstrecke. Gegenmaßnahme (Benachrichtigungen während der Session aus) ist im Training aktiv — Spiegeltest vs. „ohne Stream-Trick" zeigt die Wirkung.' : null));
+            `${st.timeouts} von ${st.polls} Abfragen ohne Antwort. ${st.f1Lost ? 'Das Ende-Ereignis der Session ging verloren (kam nicht an) — bei dauerhaft aktiven Benachrichtigungen erfährt die App das Session-Ende dann gar nicht.' : `Ende-Ereignis kam ${sgn(st.f1DelayMs)} ms gegenüber der Erwartung.`}`,
+            bad ? 'Der Datenstrom verstopft die Funkstrecke. Gegenmaßnahme (Benachrichtigungen während der Session aus, nur kurz vor einem Wechsel an) ist im Training aktiv.' : null));
     } else if (st?.error) {
         out.push(F('warn', 'Datenstrom-Test fehlgeschlagen', st.error));
     }
@@ -367,7 +249,7 @@ export function buildFindings(results) {
     const ck = results.clock;
     if (ck && !ck.error && ck.reliable === false) {
         out.push(F('warn', `Uhren-Messung nicht belastbar (${ck.samples} Messpunkte, Streuung σ ${r0(ck.residualSd)} ms)`,
-            `Die Statusantworten waren zu ungleichmäßig, um die Geräteuhr und den Startverzug sauber zu bestimmen; die Schätzungen der Spiegeltests bleiben ungenau (Startverzug/Ende nur nach Schreib-Bestätigung geschätzt).`,
+            `Die Statusantworten waren zu ungleichmäßig, um die Geräteuhr und den Startverzug sauber zu bestimmen; die Startzeit-Schätzung bleibt ungenau (nur aus der Schreib-Bestätigung geschätzt).`,
             'Diagnose wiederholen; der Datenstrom-Befund erklärt meist die Ursache.'));
     } else if (ck && !ck.error) {
         const ae = Math.abs(ck.ppm);
@@ -379,7 +261,7 @@ export function buildFindings(results) {
                 : `Abweichung nicht signifikant (kleiner als die doppelte Messunsicherheit) — die Geräteuhr ist für diesen Zweck genau genug. Streuung σ ${r0(ck.residualSd)} ms.`,
             sev !== 'ok' ? 'Uhrenfehler pro Atemzug in der Dauer-Berechnung ausgleichen.' : null));
         out.push(F('info', `Gerätestart: ${sgn(ck.startBias)} ms nach Sende-Zeitpunkt des Start-Befehls`,
-            `Bestätigung kommt ${sgn(ck.startBiasReply)} ms relativ zum Gerätestart. Ende-Ereignis erreicht die App ${r0(ck.endLatency)} ms nach dem Geräte-Ende.`,
+            `Bestätigung kommt ${sgn(ck.startBiasReply)} ms relativ zum Gerätestart. Ende-Ereignis erreicht die App ${r0(ck.endLatency)} ms nach dem Geräte-Ende${ck.endLatency < 0 ? ' (negativ ist physikalisch unmöglich: das Gerät beendet die Session etwas früher als rechnerisch angenommen — die absolute Lage des Endes bleibt daher unsicher; für die Steuerung zählt nur der Start)' : ''}.`,
             `Empfohlener Vorhalt für den Start: ca. ${r0(ck.startBias)} ms.`));
     } else if (ck?.error) {
         out.push(F('warn', 'Uhren-Test fehlgeschlagen', ck.error));
@@ -396,18 +278,30 @@ export function buildFindings(results) {
             'Die Session-Dauer lag nicht vor dem Ende der ersten Ausatmung — das Gerät hängt einen zweiten Atemzug an.', 'END_MARGIN vergrößern bzw. Dauer früher legen.'));
     }
 
-    const gA = results.mirrorFixed?.analysis?.summary, gB = results.mirrorAlwaysOn?.analysis?.summary;
-    if (gA && gB) {
-        const f = (x) => x == null ? '–' : `${x > 0 ? '+' : ''}${x.toFixed(2)} %`;
-        const better = (gA.matchedCycles >= gB.matchedCycles) && Math.abs(gA.freqErrorPct ?? 99) <= Math.abs(gB.freqErrorPct ?? 0) + 0.2;
-        out.push(F(better ? 'ok' : 'info',
-            `Stream-Trick im Vergleich: Frequenz ${f(gA.freqErrorPct)} statt ${f(gB.freqErrorPct)}, Startverzug Ø ${r0((gA.startLagClean || gA.startLag)?.mean)} statt ${r0((gB.startLagClean || gB.startLag)?.mean)} ms, ${gA.matchedCycles}/${gA.pacerCycles} statt ${gB.matchedCycles}/${gB.pacerCycles} Atemzüge zugeordnet`,
-            'Mit Stream-Trick (Standard) sind die Benachrichtigungen während der Session aus, ohne bleiben sie dauernd an.'));
-    }
-    ['mirrorFixed', 'mirrorChange', 'mirrorAlwaysOn'].forEach(k => {
+    ['sync', 'switch'].forEach(k => {
         const r = results[k];
-        if (r && r.analysis) out.push(...traceFindings(r.analysis, r.label));
-        else if (r?.error) out.push(F('bad', `${r.label || k} fehlgeschlagen`, r.error));
+        if (!r) return;
+        if (r.error) { out.push(F('bad', `${r.label || k} fehlgeschlagen`, r.error)); return; }
+        const f = r.fit;
+        if (f) {
+            const e = f.startErrorMs;
+            const sev = Math.abs(e) <= START_TOL_MS / 2 ? 'ok' : Math.abs(e) <= START_TOL_MS ? 'info' : 'warn';
+            out.push(F(f.reliable ? sev : 'warn',
+                `${r.label}: Moonbird beginnt ${sgn(e)} ms gegenüber dem Pacer-Raster (${f.n} Messpunkte, σ ${r0(f.resSd)} ms)`,
+                (f.reliable ? '' : 'Messung nicht belastbar (zu wenige/zu unruhige Statusantworten). ')
+                + `Die Geräteuhr (Zähler der Statusantwort) legt den tatsächlichen Start fest; verglichen wird mit der Startzeit, zu der der Pacer beginnt. ${e > 0 ? 'Positiv = Moonbird atmet später ein als der Pacer.' : 'Negativ = Moonbird atmet früher ein als der Pacer.'}`,
+                sev === 'ok' || !f.reliable ? null : `Vorhalt (Startbefehl früher senden) um ca. ${r0(-e)} ms ändern — Kalibrierung im Uhren-Test durchführen.`));
+            if (r.key === 'sync' || k === 'sync') {
+                const drift10 = f.ppm * 0.6;   // ms Drift in 10 Minuten
+                const sig = Math.abs(f.ppm) > 2 * f.ppmSe;
+                out.push(F(sig && Math.abs(drift10) > 150 ? 'warn' : 'ok',
+                    `Drift Moonbird gegenüber Pacer: ${sgn(f.ppm)} ± ${r0(f.ppmSe)} ppm → ${sgn(drift10)} ms in 10 Minuten`,
+                    sig ? 'Das Moonbird atmet in der Langsession geringfügig schneller/langsamer als die Handy-Uhr; jeder Rhythmuswechsel gleicht das wieder aus (Pacer beginnt mit dem Moonbird).'
+                        : 'Abweichung nicht signifikant — die Uhren laufen für diesen Zweck gleich schnell.',
+                    sig && Math.abs(drift10) > 150 ? 'Bei langen Trainings ohne Wechsel läuft das Bild sichtbar auseinander; ggf. Wechsel/Erneuerung häufiger erzwingen.' : null));
+            }
+        }
+        if (r.analysis) out.push(...traceFindings(r.analysis, r.label));
     });
     if (results.live?.analysis) out.push(...traceFindings(results.live.analysis, 'Letztes Training'));
 
@@ -477,6 +371,65 @@ export class MoonbirdDiagnostics {
     _progress(text, step = 0, total = 0) { this.onProgress?.({ text, step, total }); }
 
     _lastCmd(op) { for (let i = this.mb.trace.length - 1; i >= 0; i--) { const e = this.mb.trace[i]; if (e.type === 'cmd' && e.op === op) return e; } return null; }
+
+    /**
+     * Ein-Atemzug-Session gated abwarten: Benachrichtigungen aus, kurz vor dem erwarteten Ende wieder an,
+     * auf das Ende-Ereignis warten. Liefert { ended, tEnd, predEnd }.
+     */
+    async _waitEndGated(startMid, breathMs, timeoutMs = 20000) {
+        const mb = this.mb;
+        const predEnd = startMid + breathMs;
+        await mb.setNotifications(false);
+        const wait = predEnd - GATE_LEAD_MS - performance.now();
+        if (wait > 0) await sleep(wait);
+        const ended = mb.waitSessionEnd(timeoutMs);
+        await mb.setNotifications(true);
+        const ok = await ended;
+        return { ended: ok, tEnd: this._lastEndTime(), predEnd };
+    }
+
+    /** Statusabfragen im Puls (Benachrichtigungen nur kurz an, sonst verstopft der Sensor-Datenstrom die Strecke). */
+    async _collectCounter(until, label, pauseMs = 1700) {
+        const samples = [], rtts = [];
+        let pulses = 0, failed = 0;
+        while (performance.now() < until) {
+            this._check();
+            this._progress(`${label}: ${samples.length} Messpunkte`, samples.length, 16);
+            pulses++;
+            try {
+                await this.mb.setNotifications(true);
+                const r = await this.mb.request([0x04], 1500);
+                const c = this._lastCmd(0x04);
+                const st = MoonbirdController.parseStatus(r);
+                const rtt = r.tRecv - c.tSend;
+                rtts.push(rtt);
+                if (st.running && st.counterMs != null && rtt < 500) samples.push({ tMid: (c.tSend + r.tRecv) / 2, counter: st.counterMs });
+            } catch { failed++; }
+            try { await this.mb.setNotifications(false); } catch { /* egal */ }
+            await this._sleep(pauseMs);
+        }
+        return { samples, rtts, pulses, failed };
+    }
+
+    /** Zähler = a · t + c  →  Gerätestart (Handy-Zeit) = −c / a; a − 1 ist der Uhrenfehler. */
+    static _fit(samples) {
+        const n = samples.length;
+        const mx = samples.reduce((sum, x) => sum + x.tMid, 0) / n;
+        const my = samples.reduce((sum, x) => sum + x.counter, 0) / n;
+        let num = 0, den = 0;
+        samples.forEach(x => { num += (x.tMid - mx) * (x.counter - my); den += (x.tMid - mx) ** 2; });
+        const a = num / den;
+        const c0 = my - a * mx;
+        const resSd = stats(samples.map(x => x.counter - (a * x.tMid + c0))).sd;
+        const span = samples[n - 1].tMid - samples[0].tMid;
+        return {
+            n, a, c0, resSd, spanMs: span,
+            devStart: -c0 / a,
+            ppm: (a - 1) * 1e6,
+            ppmSe: resSd / (span * Math.sqrt(n / 12)) * 1e6,   // Standardfehler der Steigung
+            reliable: n >= 8 && resSd < 60,
+        };
+    }
 
     // ── Umgebung ──
     async runEnvironment() {
@@ -596,47 +549,20 @@ export class MoonbirdDiagnostics {
             const predEnd = startMid + plannedEnd;
             await this.mb.setNotifications(false);
 
-            const samples = [];
-            const rtts = [];
-            let pulses = 0, failed = 0;
-            while (performance.now() < predEnd - 3500) {
-                this._check();
-                this._progress(`Uhren-Test: ${samples.length} Messpunkte (ca. ${Math.round(plannedEnd / 1000)} s)`, samples.length, 16);
-                pulses++;
-                try {
-                    await this.mb.setNotifications(true);
-                    const r = await this.mb.request([0x04], 1500);
-                    const c = this._lastCmd(0x04);
-                    const st = MoonbirdController.parseStatus(r);
-                    const rtt = r.tRecv - c.tSend;
-                    rtts.push(rtt);
-                    if (st.running && st.counterMs != null && rtt < 500) samples.push({ tMid: (c.tSend + r.tRecv) / 2, counter: st.counterMs });
-                } catch { failed++; }
-                try { await this.mb.setNotifications(false); } catch { /* egal */ }
-                await this._sleep(1700);
-            }
-            const endRes = await this.mb.waitEndGated(startMid, plannedEnd, 20000);
+            const { samples, rtts, pulses, failed } = await this._collectCounter(predEnd - 3500, `Uhren-Test (ca. ${Math.round(plannedEnd / 1000)} s)`);
+            const endRes = await this._waitEndGated(startMid, plannedEnd, 20000);
             if (!endRes.ended) throw new Error('Session-Ende nicht gemeldet');
             const tEnd = endRes.tEnd;
             if (samples.length < 8) throw new Error(`zu wenige brauchbare Messpunkte (${samples.length} von ${pulses}, ${failed} ohne Antwort)`);
 
-            // counter = a * tMid + c  → Gerätestart (Handy-Zeit) = −c / a
-            const n = samples.length;
-            const mx = samples.reduce((s, x) => s + x.tMid, 0) / n;
-            const my = samples.reduce((s, x) => s + x.counter, 0) / n;
-            let num = 0, den = 0;
-            samples.forEach(x => { num += (x.tMid - mx) * (x.counter - my); den += (x.tMid - mx) ** 2; });
-            const a = num / den;
-            const c0 = my - a * mx;
-            const devStart = -c0 / a;
-            const resSd = stats(samples.map(x => x.counter - (a * x.tMid + c0))).sd;
-            const span = samples[n - 1].tMid - samples[0].tMid;
+            const fit = MoonbirdDiagnostics._fit(samples);
+            const { n, a, devStart, resSd } = fit;
             const res = {
                 samples: n, pulses, failed,
-                spanMs: span,
+                spanMs: fit.spanMs,
                 ratio: a,
-                ppm: (a - 1) * 1e6,
-                ppmSe: resSd / (span * Math.sqrt(n / 12)) * 1e6,   // Standardfehler der Steigung
+                ppm: fit.ppm,
+                ppmSe: fit.ppmSe,
                 residualSd: resSd,
                 rtt: stats(rtts),
                 devStart,
@@ -672,7 +598,7 @@ export class MoonbirdDiagnostics {
             if (!(rep[1] === 1 && rep[2] === 0)) throw new Error('Start abgelehnt');
             const startMid = (this._lastCmd(0x07).tSend + rep.tRecv) / 2;
             mb.resetStreamStats();
-            const endPromise = mb.waitSessionEnd(25000);      // vor den Abfragen registrieren, sonst wird das Ende verpasst
+            const endPromise = mb.waitSessionEnd(breath + 9000);      // vor den Abfragen registrieren, sonst wird das Ende verpasst
 
             const runRtts = [];
             let timeouts = 0;
@@ -691,6 +617,7 @@ export class MoonbirdDiagnostics {
                 timeouts, polls: runRtts.length + timeouts,
                 streamRate: stream.ratePerS, streamCount: stream.count,
                 f1DelayMs: ended && tEnd ? tEnd - (startMid + breath) : null,
+                f1Lost: !ended,
             };
             return (this.results.stream = res);
         } catch (err) {
@@ -719,7 +646,7 @@ export class MoonbirdDiagnostics {
                 const rep = await this.mb.request(MoonbirdController.startCommand);
                 if (!(rep[1] === 1 && rep[2] === 0)) throw new Error('Start abgelehnt');
                 const tSend = this._lastCmd(0x07).tSend;
-                const g = await this.mb.waitEndGated((tSend + rep.tRecv) / 2, planned, planned * 2 + 8000);
+                const g = await this._waitEndGated((tSend + rep.tRecv) / 2, planned, planned * 2 + 8000);
                 if (!g.ended) throw new Error('Session-Ende nicht gemeldet');
                 const tEnd = g.tEnd;
                 const oneWay = 50;
@@ -736,91 +663,94 @@ export class MoonbirdDiagnostics {
         return (this.results.accuracy = { items, error: stats(items.map(i => i.error)), calibrated: !!this.calibration });
     }
 
-    // ── Spiegeltest: echter Pacer + Moonbird, wie im Training ──
-    async runMirror({ key, label, rhythms, cycles = 6 }) {
+    // ── Langsession: Pacer-Anbindung, wie sie im Training verwendet wird ──
+    _hooksFor(box) {
+        return {
+            hold: (T) => box.pacer?.holdAt(T),
+            commit: (rhythm, S) => box.pacer?.switchTo(rhythm, S),
+            cancel: () => box.pacer?.cancelHold(),
+            renewed: () => {},
+        };
+    }
+
+    async _startLong(label, key, rhythm) {
+        const mb = this.mb;
+        this._progress(`${label}: Moonbird starten …`);
+        const box = { pacer: null };
+        const started = await mb.begin(rhythm, this._hooksFor(box), 'diag');
+        if (!started) { this.results[key] = { label, key, error: 'Moonbird nicht bereit (Start der Langsession fehlgeschlagen)' }; return null; }
+        box.pacer = this.createPacer(rhythm, (phase) => mb.onPacerPhase(phase));
+        box.pacer.start(started.startTs);
+        return { box, S: started.startTs };
+    }
+
+    async _endLong(box) {
+        try { box.pacer?.stop(); box.pacer?.destroy?.(); } catch { /* egal */ }
+        await this.mb.release({ wait: true }).catch(() => {});
+    }
+
+    /** Uhrvergleich einer laufenden Session: wo begann sie wirklich, wie schnell läuft die Geräteuhr? */
+    async _measureSession(anchor, durationMs, label) {
+        const { samples, pulses, failed } = await this._collectCounter(anchor + durationMs, label);
+        if (samples.length < 4) throw new Error(`zu wenige brauchbare Messpunkte (${samples.length} von ${pulses}, ${failed} ohne Antwort)`);
+        const fit = MoonbirdDiagnostics._fit(samples);
+        return { ...fit, startErrorMs: fit.devStart - anchor, pulses, failed };
+    }
+
+    // ── Synchron-Test: Langsession neben dem Pacer, Phasenlage und Drift ──
+    async runSync(durationMs = 40000) {
+        const label = 'Synchron-Test (Langsession)';
+        const t0 = performance.now();
+        const run = await this._startLong(label, 'sync', this.baseRhythm);
+        if (!run) return this.results.sync;
+        try {
+            const fit = await this._measureSession(run.S, durationMs, label);
+            await this._endLong(run.box);
+            const analysis = analyzeTrace(this.mb.trace.filter(e => e.t >= t0));
+            return (this.results.sync = { label, key: 'sync', fit, analysis });
+        } catch (err) {
+            await this._endLong(run.box);
+            if (err.message === 'Abgebrochen') throw err;
+            return (this.results.sync = { label, key: 'sync', error: err.message });
+        }
+    }
+
+    // ── Wechsel-Test: mehrere Rhythmuswechsel wie im Adaptiven Training ──
+    async runSwitch(switches = 3) {
+        const label = 'Wechsel-Test (Rhythmuswechsel)';
         const mb = this.mb;
         const t0 = performance.now();
-        this._progress(`${label}: Moonbird vorbereiten …`);
-        const ready = await mb.follow(rhythms[0], 'diag');
-        if (!ready) return (this.results[key] = { label, error: 'Moonbird nicht bereit (follow fehlgeschlagen)' });
-
-        let idx = -1;
-        let pacer = null;
-        let stopped = false;
-        let releasePromise = null;
-        const finished = new Promise((resolve) => {
-            pacer = this.createPacer(rhythms[0], (phase) => {
-                if (stopped) return;
-                if (phase === 'inhale') {
-                    idx++;
-                    if (idx >= cycles) {
-                        stopped = true;
-                        releasePromise = mb.release();          // letzten Atemzug noch beenden lassen
-                        mb.onPacerPhase(phase);                  // nur protokollieren (Kopplung ist bereits beendet)
-                        pacer.stop();
-                        resolve();
-                        return;
-                    }
-                    if (idx === cycles - 1) mb.stopAfterCurrent();   // dieser Atemzug ist der letzte — kein Vorhalt-Start für einen weiteren
-                    const next = rhythms[idx % rhythms.length];
-                    const cur = pacer.rhythm;
-                    if (cur.inhale !== next.inhale || cur.holdIn !== next.holdIn || cur.exhale !== next.exhale || cur.holdOut !== next.holdOut) {
-                        pacer.rhythm = { ...next };
-                        pacer.startTime = performance.now();
-                    }
-                    mb.setRhythm(next);
-                    this._progress(`${label}: Atemzug ${idx + 1}/${cycles}`, idx, cycles);
-                }
-                mb.onPacerPhase(phase);
-            });
-        });
-        pacer.start();
-
-        const maxMs = cycles * Math.max(...rhythms.map(cycleOf)) + 30000;
-        const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('Zeitüberschreitung')), maxMs));
-        const aborted = new Promise((_, rej) => { this._abortReject = rej; });
-        aborted.catch(() => {}); timeout.catch(() => {});
-        try {
-            await Promise.race([finished, timeout, aborted]);
-            if (releasePromise) await releasePromise;
-            await this._sleep(500);
-        } catch (err) {
-            stopped = true;
-            await mb.release().catch(() => {});
-            pacer.stop(); pacer.destroy?.();
-            if (err.message === 'Abgebrochen') throw err;
-            return (this.results[key] = { label, error: err.message });
-        }
-        pacer.destroy?.();
-        const analysis = analyzeTrace(mb.trace.filter(e => e.t >= t0), { calibration: this.calibration });
-        return (this.results[key] = { label, rhythms, cycles, analysis, calibrated: !!this.calibration });
-    }
-
-    mirrorFixed(cycles = 6) {
-        return this.runMirror({ key: 'mirrorFixed', label: 'Spiegeltest fester Rhythmus', rhythms: [this.baseRhythm], cycles });
-    }
-
-    mirrorChange(cycles = 6) {
         const b = this.baseRhythm;
         const step = (d) => ({ ...b, inhale: b.inhale + d, exhale: b.exhale + d });
-        return this.runMirror({ key: 'mirrorChange', label: 'Spiegeltest mit Rhythmuswechsel', rhythms: [b, step(300), step(600), step(300), b, step(-300)], cycles });
-    }
-
-    /** Vergleichslauf: Benachrichtigungen bleiben während der Session an (ohne Stream-Trick). */
-    async mirrorAlwaysOn(cycles = 4) {
-        const prev = this.mb.gateStream;
-        this.mb.gateStream = false;
+        const seq = [step(300), step(600), b, step(-300)].slice(0, switches);
+        const run = await this._startLong(label, 'switch', b);
+        if (!run) return this.results.switch;
+        const outcomes = [];
         try {
-            return await this.runMirror({ key: 'mirrorAlwaysOn', label: 'Spiegeltest OHNE Stream-Trick (Vergleich)', rhythms: [this.baseRhythm], cycles });
-        } finally {
-            this.mb.gateStream = prev;
-            await this.mb.setNotifications(true).catch(() => {});
+            await this._sleep(Math.max(0, run.S + 2 * cycleOf(b) - performance.now()));
+            for (let i = 0; i < seq.length; i++) {
+                this._progress(`${label}: Wechsel ${i + 1}/${seq.length}`, i, seq.length);
+                const res = await mb.switchRhythm(seq[i]);
+                outcomes.push({ ok: res.ok, extraPauseMs: res.extraPauseMs ?? null, reason: res.reason || null });
+                if (!res.ok) break;
+                await this._sleep(Math.max(0, res.effectiveTs + 1.2 * cycleOf(seq[i]) - performance.now()));
+            }
+            // Wie genau begann die zuletzt gestartete Session? (Ausrichtung nach einem Wechsel)
+            const anchor = mb.session?.anchor ?? run.S;
+            const fit = await this._measureSession(anchor, 32000, `${label}: Ausrichtung messen`);
+            await this._endLong(run.box);
+            const analysis = analyzeTrace(mb.trace.filter(e => e.t >= t0));
+            return (this.results.switch = { label, key: 'switch', outcomes, fit, analysis });
+        } catch (err) {
+            await this._endLong(run.box);
+            if (err.message === 'Abgebrochen') throw err;
+            return (this.results.switch = { label, key: 'switch', outcomes, error: err.message });
         }
     }
 
     /** Auswertung des letzten realen Trainings (aus dem laufenden Zeitprotokoll). */
     analyzeLive() {
-        return (this.results.live = analyzeLastTraining(this.mb.trace, this.calibration));
+        return (this.results.live = analyzeLastTraining(this.mb.trace));
     }
 
     async runOne(name) {
@@ -832,9 +762,8 @@ export class MoonbirdDiagnostics {
             stream: () => this.runStream(),
             clock: () => this.runClock(),
             accuracy: () => this.runAccuracy(),
-            mirrorFixed: () => this.mirrorFixed(),
-            mirrorChange: () => this.mirrorChange(),
-            mirrorAlwaysOn: () => this.mirrorAlwaysOn(),
+            sync: () => this.runSync(),
+            switch: () => this.runSwitch(),
             live: async () => this.analyzeLive(),
         };
         try { return await map[name](); }
@@ -843,7 +772,7 @@ export class MoonbirdDiagnostics {
 
     async runAll() {
         this._aborted = false;
-        const steps = ['env', 'latency', 'latencyEcg', 'stream', 'clock', 'accuracy', 'mirrorFixed', 'mirrorChange', 'mirrorAlwaysOn'];
+        const steps = ['env', 'latency', 'latencyEcg', 'stream', 'clock', 'accuracy', 'sync', 'switch'];
         for (const s of steps) {
             this._check();
             try { await this.runOne(s); }
@@ -891,12 +820,16 @@ export function renderText(report) {
     if (r.latencyEcg?.without) L.push(`Latenz ohne/mit EKG (Median): ${r0(r.latencyEcg.without.ack?.p50)} / ${r0(r.latencyEcg.with?.ack?.p50)} ms`);
     if (r.clock && !r.clock.error) L.push(`Uhr: ${sgn(r.clock.ppm)} ± ${r0(r.clock.ppmSe)} ppm, Start ${sgn(r.clock.startBias)} ms nach Senden, Ende-Latenz ${r0(r.clock.endLatency)} ms, σ ${r0(r.clock.residualSd)} ms`);
     if (r.accuracy?.items) L.push(`Atemzug-Genauigkeit: ${r.accuracy.items.map(i => `${r0(i.planned)}→${sgn(i.error)}`).join(', ')} ms`);
-    ['mirrorFixed', 'mirrorChange', 'mirrorAlwaysOn', 'live'].forEach(k => {
-        const a = r[k]?.analysis;
+    ['sync', 'switch', 'live'].forEach(k => {
+        const x = r[k];
+        if (!x) return;
+        const name = x.label || 'Letztes Training';
+        if (x.fit) L.push(`${name}: Start ${sgn(x.fit.startErrorMs)} ms gegenüber Pacer, Drift ${sgn(x.fit.ppm)} ± ${r0(x.fit.ppmSe)} ppm, ${x.fit.n} Messpunkte, σ ${r0(x.fit.resSd)} ms`);
+        const a = x.analysis;
         if (!a) return;
         const s = a.summary;
-        L.push(`${r[k].label || 'Letztes Training'}: ${s.matchedCycles}/${s.pacerCycles} Atemzüge, Spiegelgüte ${r0(s.mirrorQualityPct)} %, Startverzug ${fmtStats(s.startLag)}, Frequenz ${s.freqErrorPct == null ? '–' : s.freqErrorPct.toFixed(2)} %, Ende-Versatz ${fmtStats(s.endOffset)}`);
-        a.cycles.filter(c => c.matched).forEach(c => L.push(`   #${c.i + 1} Verzug ${sgn(c.startLag)} (App ${r0(c.cmdLag)} + Gerät) · Atemzug ${r0(c.breathMeasured)}/${r0(c.progBreath)} ms · Ende ${sgn(c.endOffset)} · Periode ${sgn(c.periodErr)} ${Object.keys(c.flags).join(',')}`));
+        L.push(`${name}: ${s.sessions} Session(s), ${s.switchesOk}/${s.switches} Wechsel erfolgreich (${s.renewals} Erneuerungen), zusätzliche Pause ${fmtStats(s.extraPause)}, Ruhe Ausatem-Ende→Start ${fmtStats(s.silent)}, Ende-Ereignis ${fmtStats(s.endLatency)}, Pacer-Versatz ${fmtStats(s.pacerOffset)}`);
+        a.switches.forEach((w, i) => L.push(`   #${i + 1} ${w.ok ? 'ok' : 'FEHLER ' + (w.reason || '')}${w.renew ? ' (Erneuerung)' : ''} · Pause+ ${sgn(w.extraPauseMs)} · Ruhe ${r0(w.silentMs)} · Ende ${sgn(w.endLatencyMs)}${w.endLost ? ' (F1 verloren)' : ''}${w.replans ? ' · ' + w.replans + '× umgeplant' : ''}`));
     });
     return L.join('\n');
 }
@@ -918,16 +851,15 @@ function svgBars(values, tol) {
             + `<text x="${(xPos + bw / 2).toFixed(1)}" y="${H - 1}" font-size="8" fill="#7a9bc0" text-anchor="middle">${i + 1}</text>`;
     }).join('');
     const band = `<rect x="0" y="${zero - tol * scale}" width="${W}" height="${2 * tol * scale}" fill="rgba(0,212,255,0.07)"/>`;
-    return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="Startverzug pro Atemzug">${band}<line x1="0" x2="${W}" y1="${zero}" y2="${zero}" stroke="#2a4468"/>${bars}</svg>`;
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="Zusätzliche Pause je Wechsel">${band}<line x1="0" x2="${W}" y1="${zero}" y2="${zero}" stroke="#2a4468"/>${bars}</svg>`;
 }
 
-function cycleTable(a) {
-    // Das letzte Einatem-Signal beendet die Aufzeichnung nur — kein eigener Atemzug
-    const rows = a.cycles.filter(c => c.tNext != null || c.matched).map(c => {
-        if (!c.matched) return `<tr class="dz-miss"><td>${c.i + 1}</td><td colspan="6">kein Moonbird-Start${Object.keys(c.flags).length ? ' (' + esc(Object.keys(c.flags).join(', ')) + ')' : ''}</td></tr>`;
-        return `<tr><td>${c.i + 1}</td><td>${sgn(c.startLag)}</td><td>${r0(c.cmdLag)}</td><td>${r0(c.breathMeasured)} / ${r0(c.progBreath)}</td><td>${sgn(c.endOffset)}</td><td>${sgn(c.periodErr)}</td><td>${esc(Object.keys(c.flags).join(', '))}</td></tr>`;
+function switchTable(a) {
+    const rows = a.switches.map((w, i) => {
+        if (!w.ok) return `<tr class="dz-miss"><td>${i + 1}</td><td colspan="6">${esc(w.reason || 'fehlgeschlagen')}</td></tr>`;
+        return `<tr><td>${i + 1}${w.renew ? ' (erneuert)' : ''}</td><td>${sgn(w.extraPauseMs)}</td><td>${r0(w.holdOldMs)}</td><td>${r0(w.silentMs)}</td><td>${sgn(w.endLatencyMs)}${w.endLost ? ' ✗' : ''}</td><td>${r0(w.waitMs)}</td><td>${w.replans || ''}</td></tr>`;
     }).join('');
-    return `<table class="dz-table"><tr><th>#</th><th>Start ms</th><th>App ms</th><th>Atemzug ms (gem./Befehl)</th><th>Ende ms</th><th>Periode ms</th><th>Ereignisse</th></tr>${rows}</table>`;
+    return `<table class="dz-table"><tr><th>#</th><th>Pause+ ms</th><th>Halt ms</th><th>Ruhe ms</th><th>F1 ms</th><th>Dauer ms</th><th>Umplan.</th></tr>${rows}</table>`;
 }
 
 export function renderHTML(report) {
@@ -941,17 +873,18 @@ export function renderHTML(report) {
             + (f.detail ? `<div class="dz-detail">${esc(f.detail)}</div>` : '')
             + (f.suggestion ? `<div class="dz-sugg">→ ${esc(f.suggestion)}</div>` : '') + '</div>');
     });
-    ['mirrorFixed', 'mirrorChange', 'mirrorAlwaysOn', 'live'].forEach(k => {
+    ['sync', 'switch', 'live'].forEach(k => {
         const a = r[k]?.analysis;
-        if (!a) return;
-        parts.push(`<h3 class="dz-h">${esc(r[k].label || 'Letztes Training')} — Startverzug je Atemzug</h3>`);
-        parts.push(svgBars(a.cycles.filter(c => c.matched).map(c => c.startLag), START_TOL_MS));
-        parts.push(cycleTable(a));
+        if (!a || !a.switches.length) return;
+        parts.push(`<h3 class="dz-h">${esc(r[k].label || 'Letztes Training')} — zusätzliche Pause je Wechsel</h3>`);
+        parts.push(svgBars(a.switches.filter(w => w.ok).map(w => w.extraPauseMs), PAUSE_TOL_MS));
+        parts.push(switchTable(a));
     });
     parts.push('<h3 class="dz-h">Kennwerte</h3>');
     const kv = [];
     if (r.latency) kv.push(['Schreib-Bestätigung', fmtStats(r.latency.ack)], ['Antwort-Notification', fmtStats(r.latency.reply)]);
     if (r.latencyEcg?.without) kv.push(['Latenz ohne EKG (Median)', `${r0(r.latencyEcg.without.ack?.p50)} ms`], ['Latenz mit EKG (Median)', `${r0(r.latencyEcg.with?.ack?.p50)} ms`]);
+    ['sync', 'switch'].forEach(k => { if (r[k]?.fit) kv.push([`${r[k].label}: Start gegenüber Pacer`, `${sgn(r[k].fit.startErrorMs)} ms (Drift ${sgn(r[k].fit.ppm)} ± ${r0(r[k].fit.ppmSe)} ppm)`]); });
     if (r.clock && !r.clock.error) kv.push(['Geräteuhr', `${sgn(r.clock.ppm)} ± ${r0(r.clock.ppmSe)} ppm`], ['Gerätestart nach Senden', `${sgn(r.clock.startBias)} ms`], ['Ende-Ereignis-Latenz', `${r0(r.clock.endLatency)} ms`]);
     if (r.env) kv.push(['Frames', fmtStats(r.env.frames)], ['Timer-Jitter', fmtStats(r.env.timerJitter)], ['Hauptthread-Blockaden', `${r.env.longTasks?.count ?? 0} (max ${r0(r.env.longTasks?.maxMs)} ms)`], ['Plattform', esc(r.env.userAgent)]);
     parts.push('<table class="dz-table">' + kv.map(([k, v]) => `<tr><th>${esc(k)}</th><td>${v}</td></tr>`).join('') + '</table>');

@@ -648,11 +648,12 @@ class App {
         test.onRhythmChange = (rhythm) => {
             // Rhythmus nahtlos übernehmen: startTime neu setzen, damit die Modulo-Animation
             // nicht springt (die Anpassung erfolgt ohnehin an einer frischen Zyklusgrenze).
+            // Auch der Rückfall, wenn das Moonbird ausfällt: dann steht der Pacer evtl. noch in der Wechsel-Pause.
             if (this.adaptivePacer) {
+                this.adaptivePacer.cancelHold();
                 this.adaptivePacer.rhythm = rhythm;
                 this.adaptivePacer.startTime = performance.now();
             }
-            this.moonbird.setRhythm(rhythm); // Moonbird übernimmt ihn ab dem nächsten Atemzug
         };
         test.onCalibrationDone = () => {
             const label = document.getElementById('adaptive-status-label');
@@ -667,16 +668,31 @@ class App {
         const container    = document.getElementById('adaptive-pacer-container');
         const labelEl       = document.getElementById('adaptive-breath-label');
         const countdownEl   = document.getElementById('adaptive-breath-countdown');
-        // Moonbird vorbereiten (best effort): erstes Programm setzen, bevor der Pacer losläuft,
-        // damit schon der erste Atemzug gespürt wird. Ohne Moonbird ändert sich nichts.
+        // Moonbird starten (best effort): eine lange Session mit dem exakten Rhythmus; der Pacer beginnt
+        // genau zur Startzeit des Geräts. Rhythmuswechsel des Trainings laufen danach über requestSwitch:
+        // Moonbird und Pacer wechseln gemeinsam an einer Zyklusgrenze (siehe moonbird.js).
+        // Ohne Moonbird ändert sich nichts.
+        let pacerStart;
         if (this.moonbird.isConnected) {
-            if (startBtn) startBtn.textContent = 'Moonbird wird vorbereitet…';
-            const savedOverhead = await this.db.getSetting('moonbirdOverheadMs', null).catch(() => null);
-            if (savedOverhead) this.moonbird.restoreOverhead(savedOverhead);
+            if (startBtn) startBtn.textContent = 'Moonbird wird gestartet…';
             this._moonbirdApplyCalibration();
-            const moonbirdReady = await this.moonbird.follow(baseRhythm);
+            const started = await this.moonbird.begin(baseRhythm, {
+                hold:   (T) => this.adaptivePacer?.holdAt(T),
+                commit: (rhythm, S) => this.adaptivePacer?.switchTo(rhythm, S),
+                cancel: () => this.adaptivePacer?.cancelHold(),
+                renewed: (res) => test.noteEpoch(res.effectiveTs, this.moonbird.session?.rhythm ?? test.appliedRhythm),
+            });
             if (startBtn) startBtn.textContent = 'Training starten';
-            if (!moonbirdReady) this._showToast('Moonbird nicht bereit – Training läuft ohne Moonbird.');
+            if (started) {
+                pacerStart = started.startTs;
+                test.requestSwitch = async (rhythm) => {
+                    const res = await this.moonbird.switchRhythm(rhythm);
+                    if (!res.ok && !this.moonbird.active) res.decoupled = true;   // Moonbird ausgefallen/getrennt
+                    return res;
+                };
+            } else {
+                this._showToast('Moonbird nicht bereit – Training läuft ohne Moonbird.');
+            }
         }
 
         if (this.adaptivePacer) this.adaptivePacer.destroy();
@@ -686,7 +702,7 @@ class App {
                 test.notifyPhaseChange(phase);
                 this.moonbird.onPacerPhase(phase);
             };
-            this.adaptivePacer.start();
+            this.adaptivePacer.start(pacerStart);
         }
 
         const statusLabel = document.getElementById('adaptive-status-label');
@@ -843,8 +859,6 @@ class App {
             onProgress: ({ text }) => { if (progress) progress.textContent = text; },
         });
         if (this._moonbirdCalibration) this.moonbirdDiag.calibration = this._moonbirdCalibration;
-        const savedOverhead = await this.db.getSetting('moonbirdOverheadMs', null).catch(() => null);
-        if (savedOverhead && this.moonbird.learnedOverheadMs == null) this.moonbird.restoreOverhead(savedOverhead);
         this._moonbirdApplyCalibration();
 
         document.getElementById('mbd-close').onclick = () => { if (!this._mbdBusy) screen.style.display = 'none'; };
@@ -895,8 +909,6 @@ class App {
                 this._moonbirdCalibration = diag.calibration;
                 this.db.setSetting('moonbirdCalibration', diag.calibration).catch(() => {});
             }
-            const learned = this.moonbird.learnedOverheadMs;
-            if (learned) this.db.setSetting('moonbirdOverheadMs', learned).catch(() => {});
             if (progress) progress.textContent = 'Fertig.';
         } catch (err) {
             if (progress) progress.textContent = err.message === 'Abgebrochen' ? 'Abgebrochen.' : `Fehler: ${err.message}`;
@@ -950,13 +962,11 @@ class App {
 
     _adaptiveOnComplete(summary) {
         this.adaptiveTest = null;
-        const learned = this.moonbird.learnedOverheadMs;
-        if (learned) this.db.setSetting('moonbirdOverheadMs', learned).catch(() => {});
         this._adaptiveShowSection('adaptive-result');
 
         const reportBtn = document.getElementById('adaptive-moonbird-report-btn');
         if (reportBtn) {
-            const hasLive = !!analyzeLastTraining(this.moonbird.trace, this._moonbirdCalibration).analysis;
+            const hasLive = !!analyzeLastTraining(this.moonbird.trace).analysis;
             reportBtn.style.display = hasLive ? '' : 'none';
             reportBtn.onclick = () => this._moonbirdDiagOpen({ runLive: true });
         }
@@ -996,10 +1006,11 @@ class App {
                 // entweder ist das echt, oder die Messung stimmt nicht. Beides sollte sichtbar sein.
                 rows.push(['Hinweis', `${summary.bandLimited}× an der Frequenzgrenze gedeckelt`]);
             }
-            const live = analyzeLastTraining(this.moonbird.trace, this._moonbirdCalibration);
-            if (live.analysis?.summary.pacerCycles) {
+            const live = analyzeLastTraining(this.moonbird.trace);
+            if (live.analysis?.summary.sessions) {
                 const ms = live.analysis.summary;
-                rows.push(['Moonbird-Spiegelung', `${Math.round(ms.mirrorQualityPct ?? 0)} % der Atemzüge im Toleranzbereich · Ø Startverzug ${ms.startLag ? Math.round(ms.startLag.mean) : '–'} ms`]);
+                const pause = ms.extraPause ? `zusätzliche Pause Ø ${Math.round(ms.extraPause.mean)} ms (max ${Math.round(ms.extraPause.max)} ms)` : 'keine Wechsel-Pausen';
+                rows.push(['Moonbird', `${ms.switchesOk} Rhythmuswechsel im Takt mit dem Pacer${ms.switchesFailed ? `, ${ms.switchesFailed} fehlgeschlagen` : ''} · ${pause}`]);
             }
             rows.push(['Sprach-Hinweise', `${summary.speechCues}×`]);
             rows.push(['Beobachtete Zyklen', `${summary.cyclesObserved}`]);

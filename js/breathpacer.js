@@ -3,6 +3,8 @@
  * Timing in Millisekunden · Audio-Support · dreischichtige Orb-Animation
  */
 export class BreathPacer {
+    static HOLD_MAX_MS = 6000;
+
     /**
      * @param {HTMLElement} orbContainer  – Container für die Orb-Animation
      * @param {object}      rhythm        – Timing in ms: { inhale, holdIn, exhale, holdOut }
@@ -23,6 +25,9 @@ export class BreathPacer {
         this.animFrame   = null;
 
         this.onPhaseChange = null; // (phase: string) => void
+
+        // Geplanter Rhythmuswechsel (Moonbird): { at, rhythm, startTime } — siehe holdAt()/switchTo()
+        this._hold = null;
 
         this._buildOrb();
     }
@@ -49,11 +54,33 @@ export class BreathPacer {
 
     setRhythm(rhythm) { this.rhythm = rhythm; }
 
-    start() {
+    /** @param {number} [startTime] Beginn des ersten Zyklus (performance.now()-Zeit); liegt er in der Vergangenheit, läuft der Zyklus dort schon. */
+    start(startTime = performance.now()) {
         this.isRunning = true;
-        this.startTime = performance.now();
+        this.startTime = startTime;
+        this._hold = null;
         this._tick();
     }
+
+    /**
+     * Rhythmuswechsel an einer Zyklusgrenze vorbereiten: Der Pacer läuft bis zum Zyklusende `at` normal weiter,
+     * bleibt dann in der Pause stehen und wartet auf switchTo(). Wird nie umgeschaltet, gibt er nach
+     * HOLD_MAX_MS mit dem alten Rhythmus von selbst wieder frei.
+     */
+    holdAt(at) {
+        this._hold = { at, rhythm: null, startTime: null, until: at + BreathPacer.HOLD_MAX_MS };
+    }
+
+    /** Wartezustand aufheben und mit dem alten Rhythmus (auf seiner bisherigen Zeitachse) weiterlaufen. */
+    cancelHold() { this._hold = null; }
+
+    /** Neuen Rhythmus ab `startTime` (>= Zyklusende aus holdAt) beginnen; bis dahin bleibt der Pacer in der Pause. */
+    switchTo(rhythm, startTime) {
+        const at = this._hold ? this._hold.at : startTime;
+        this._hold = { at, rhythm: { ...rhythm }, startTime: Math.max(startTime, at), until: Infinity };
+    }
+
+    get holding() { return !!this._hold; }
 
     stop() {
         this.isRunning = false;
@@ -66,13 +93,33 @@ export class BreathPacer {
     _tick() {
         if (!this.isRunning) return;
 
-        const now     = performance.now();
+        const now = performance.now();
+
+        // Geplanter Rhythmuswechsel: am Zyklusende in der Pause warten, dann neu beginnen
+        const h = this._hold;
+        let holdPause = false;
+        if (h) {
+            if (h.rhythm && now >= h.startTime) {
+                this.rhythm = h.rhythm;
+                this.startTime = h.startTime;
+                this._hold = null;
+            } else if (now >= h.at) {
+                if (now > h.until) this._hold = null;   // nie umgeschaltet: mit dem alten Rhythmus weiter
+                else holdPause = true;
+            }
+        }
+
+        if (now < this.startTime) holdPause = true;   // Start liegt noch in der Zukunft (Moonbird beginnt gleich)
         const elapsed = (now - this.startTime) % this.cycleDurationMs;
         const { inhale, holdIn, exhale, holdOut } = this.rhythm;
 
         let phase, progress, remainingMs;
 
-        if (elapsed < inhale) {
+        if (holdPause) {
+            phase = 'holdOut';
+            progress = 0;
+            remainingMs = 0;
+        } else if (elapsed < inhale) {
             phase = 'inhale';
             progress = elapsed / inhale;
             remainingMs = inhale - elapsed;
