@@ -46,6 +46,8 @@ const END_FALLBACK_MS    = 1200;      // so lange nach dem vorhergesagten Ende o
 const END_BIAS_MAX_MS    = 400;
 const OVERHEAD_MIN_MS    = 100;       // Lücke Ende-Ereignis → Start: selbstregelnd zwischen diesen Grenzen
 const OVERHEAD_MAX_MS    = 1500;
+const DEVICE_START_MS    = 120;       // Moonbird beginnt so lange nach Eintreffen des Startbefehls (am PC und Handy ~110–130 ms)
+const LEAD_MAX_MS        = 450;
 const SLACK_MARGIN_MS    = 80;        // so viel Reserve zwischen "Programm bereit" und Einatem-Signal ist gewollt
 
 function rhythmKey(r) {
@@ -99,6 +101,16 @@ export class MoonbirdController {
         this._preparedAt = 0;
         this._reprepared = false;
         this._breathCount = 0;
+        // Vorhalt: Startbefehl so viel VOR dem Einatem-Signal senden, wie das Moonbird zum Losgehen braucht,
+        // damit es mit dem Pacer einatmet statt ~0,2 s danach.
+        this.leadEnabled = true;
+        this.leadOverrideMs = null;     // z. B. aus der Kalibrierung (Diagnose: Gerätestart nach Senden)
+        this._leadTimer = null;
+        this._targetInhaleT = 0;        // vorhergesagtes nächstes Einatem-Signal
+        this._eventSeq = 0;             // Zähler der Einatem-Signale des Pacers
+        this._stopAfter = false;        // nach dem laufenden Atemzug nichts Neues mehr starten
+        this._targetSeq = 0;            // Nummer des Einatem-Signals, für das der Start geplant ist
+        this._lastStartSendT = 0;
         this._streamCount = 0;
         this._streamFirst = 0;
         this._streamLast = 0;
@@ -361,6 +373,40 @@ export class MoonbirdController {
         this._gapEma = Math.max(0, this._overheadMs - SLACK_MARGIN_MS);
     }
 
+    /** Vorhalt in ms: Schreib-Bestätigung/2 (Weg zum Gerät) + Startverzögerung des Geräts; 0 solange nichts gemessen ist. */
+    get startLeadMs() {
+        if (!this.leadEnabled) return 0;
+        if (this.leadOverrideMs != null) return Math.max(0, Math.min(LEAD_MAX_MS, this.leadOverrideMs));
+        const acks = [];
+        for (let i = this.trace.length - 1; i >= 0 && acks.length < 8; i--) {
+            const e = this.trace[i];
+            if (e.type === 'cmd' && e.tWritten != null && e.tSend != null) acks.push(e.tWritten - e.tSend);
+        }
+        if (acks.length < 2) return 0;
+        acks.sort((a, b) => a - b);
+        return Math.max(0, Math.min(LEAD_MAX_MS, acks[Math.floor(acks.length / 2)] / 2 + DEVICE_START_MS));
+    }
+
+    /**
+     * Nach fertigem Programm: den Start so planen, dass das Moonbird zum vorhergesagten Einatem-Signal
+     * losgeht (Sendezeitpunkt = Einatem-Signal − Vorhalt). Der Pacer läuft mit dem letzten Rhythmus weiter,
+     * sein Zyklus ist bekannt.
+     */
+    _scheduleStart() {
+        clearTimeout(this._leadTimer);
+        this._leadTimer = null;
+        if (!this.following || !this._lastInhaleT) return;      // erster Atemzug: startet mit dem ersten Einatem-Signal
+        const lead = this.startLeadMs;
+        if (lead <= 0) return;
+        const r = this.rhythm;
+        this._targetInhaleT = this._lastInhaleT + r.inhale + (r.holdIn || 0) + r.exhale + (r.holdOut || 0);
+        this._targetSeq = this._eventSeq + 1;
+        const delay = this._targetInhaleT - lead - performance.now();
+        this._trace('decision', { what: 'schedule', lead, delay });
+        if (delay <= 0) { this._startBreath(); return; }
+        this._leadTimer = setTimeout(() => this._startBreath(), delay);
+    }
+
     async _queryRunning() {
         const r = await this._request(new Uint8Array([OP_STATUS]));
         return r[3] === STATE_RUNNING;
@@ -429,6 +475,12 @@ export class MoonbirdController {
             this.running = false;
             this.prepared = null;
             this._wantStart = false;
+            this._stopAfter = false;
+            this._lastInhaleT = 0;
+            this._targetInhaleT = 0;
+            this._targetSeq = 0;
+            this._eventSeq = 0;
+            this._lastStartSendT = 0;
             await this._prepare();
             return this.following;
         } catch (err) {
@@ -447,18 +499,30 @@ export class MoonbirdController {
     /** Von app.js bei jedem Phasenwechsel des Pacers aufzurufen. */
     onPacerPhase(phase) {
         this._trace('pacer', { phase, following: this.following });
-        if (phase === 'inhale') this._lastInhaleT = performance.now();
-        if (phase !== 'inhale' || !this.following) return;
-        // Bewusst erst nach der aktuellen Verarbeitung: Das Adaptive Training ändert
-        // den Rhythmus direkt nach dem Einatem-Signal — so startet der Atemzug
-        // schon mit dem neuen Rhythmus.
+        if (phase !== 'inhale') return;
+        const now = performance.now();
+        const prev = this._lastInhaleT;
+        this._lastInhaleT = now;
+        this._eventSeq++;
+        if (!this.following) return;
+        // Wurde der Atemzug schon mit Vorhalt vor diesem Signal gestartet (2. Hälfte des Zyklus), nichts tun
+        if (prev > 0 && this._lastStartSendT > prev + 0.5 * (now - prev)) return;
+        // Ohne Vorhalt (erster Atemzug, Programm zu spät bereit): Start mit dem Einatem-Signal. Bewusst erst nach
+        // der aktuellen Verarbeitung, damit ein Rhythmuswechsel des Adaptiven Trainings noch einfließt.
         setTimeout(() => this._startBreath(), 0);
+    }
+
+    /** Den gerade laufenden (oder als Nächstes startenden) Atemzug noch zu Ende führen, danach nichts Neues mehr starten. */
+    stopAfterCurrent() {
+        this._stopAfter = true;
+        clearTimeout(this._leadTimer);
     }
 
     /** Beendet die Kopplung; ein laufender Atemzug wird noch zu Ende geführt. */
     async release() {
         this.following = false;
         this._wantStart = false;
+        clearTimeout(this._leadTimer);
         if (this.running) await this._waitSessionEnd(IDLE_WAIT_MS);
     }
 
@@ -489,6 +553,7 @@ export class MoonbirdController {
         }
         this._preparing = false;
         if (this._wantStart) this._startBreath();
+        else this._scheduleStart();
     }
 
     async _startBreath() {
@@ -515,7 +580,11 @@ export class MoonbirdController {
 
         this._wantStart = false;
         this._starting = true;
-        this._adaptOverhead();
+        clearTimeout(this._leadTimer);
+        const early = this._targetSeq > this._eventSeq;   // Start gehört zu einem noch bevorstehenden Einatem-Signal
+        const lead = this.startLeadMs;
+        this._adaptOverhead(early ? this._targetInhaleT : this._lastInhaleT, lead);
+        this._lastStartSendT = performance.now();
         try {
             const prog = this._lastProgram ? { ...this._lastProgram } : null;
             const reply = await this._request(START_CMD);
@@ -523,7 +592,7 @@ export class MoonbirdController {
                 this.running = true;
                 this.prepared = null;
                 this._runStartedAt = Date.now();
-                this._trace('session', { prog, tReply: reply.tRecv });
+                this._trace('session', { prog, tReply: reply.tRecv, early, lead: early ? lead : 0 });
                 this._afterStart(this._lastCmdSend(0x07), reply.tRecv);
             } else {
                 this._trace('decision', { what: 'start-rejected' });
@@ -547,15 +616,18 @@ export class MoonbirdController {
      * Neues Budget = Lücke + kleine Reserve + der halbe aufgelaufene Rückstand (holt Verzug stetig auf).
      * Rhythmuswechsel-Atemzüge (Neuvorbereitung) und der erste Atemzug gehen nicht in die Schätzung ein.
      */
-    _adaptOverhead() {
-        const A = this._preparedAt - this._lastInhaleT;
+    _adaptOverhead(inhaleRef, lead = 0) {
+        // Bereitschaft relativ zum Zeitpunkt, an dem der Startbefehl idealerweise gesendet würde
+        const A = this._preparedAt - (inhaleRef - lead);
         const budget = this._lastBudget;
         const prevA = this._prevA, prevBudget = this._prevBudget;
-        const skip = this._reprepared || this._breathCount === 0 || !this._lastInhaleT || prevA == null;
+        const contaminated = this._reprepared;            // Neuvorbereitung verfälscht A (nicht das Budget)
+        const skip = contaminated || this._breathCount === 0 || !inhaleRef || prevA == null;
         this._reprepared = false;
         this._breathCount++;
-        this._prevA = A;
-        this._prevBudget = budget;
+        // Der erste Atemzug liefert einen gültigen Vorgängerwert (lange vorher bereit, A ≪ 0), ein verunreinigter nicht
+        this._prevA = (contaminated || !inhaleRef) ? null : A;
+        this._prevBudget = (contaminated || !inhaleRef) ? null : budget;
         if (skip) return;
 
         const gap = A - Math.max(prevA, 0) + prevBudget;
@@ -577,6 +649,7 @@ export class MoonbirdController {
         }
         this._clearGate();
         this.running = false;
+        if (this._stopAfter) { this._stopAfter = false; this.following = false; }
         this._endListeners.splice(0).forEach(fn => fn(true));
         if (this.following) this._prepare();
     }
@@ -592,6 +665,8 @@ export class MoonbirdController {
     }
 
     _clearGate() {
+        clearTimeout(this._leadTimer);
+        this._leadTimer = null;
         clearTimeout(this._endTimer);
         clearTimeout(this._fallbackTimer);
         this._endTimer = this._fallbackTimer = null;

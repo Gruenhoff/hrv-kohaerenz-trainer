@@ -673,6 +673,7 @@ class App {
             if (startBtn) startBtn.textContent = 'Moonbird wird vorbereitet…';
             const savedOverhead = await this.db.getSetting('moonbirdOverheadMs', null).catch(() => null);
             if (savedOverhead) this.moonbird.restoreOverhead(savedOverhead);
+            this._moonbirdApplyCalibration();
             const moonbirdReady = await this.moonbird.follow(baseRhythm);
             if (startBtn) startBtn.textContent = 'Training starten';
             if (!moonbirdReady) this._showToast('Moonbird nicht bereit – Training läuft ohne Moonbird.');
@@ -809,6 +810,12 @@ class App {
         this._moonbirdDiagUpdateUI();
     }
 
+    /** Vorhalt des Startbefehls aus der Diagnose-Kalibrierung (Gerätestart nach Senden) übernehmen. */
+    _moonbirdApplyCalibration() {
+        const bias = this._moonbirdCalibration?.startBias;
+        this.moonbird.leadOverrideMs = (bias > 40 && bias < 450) ? bias : null;
+    }
+
     // ─── Moonbird-Diagnose ──────────────────────────────────────────────────
 
     async _moonbirdDiagOpen({ runLive = false } = {}) {
@@ -836,6 +843,9 @@ class App {
             onProgress: ({ text }) => { if (progress) progress.textContent = text; },
         });
         if (this._moonbirdCalibration) this.moonbirdDiag.calibration = this._moonbirdCalibration;
+        const savedOverhead = await this.db.getSetting('moonbirdOverheadMs', null).catch(() => null);
+        if (savedOverhead && this.moonbird.learnedOverheadMs == null) this.moonbird.restoreOverhead(savedOverhead);
+        this._moonbirdApplyCalibration();
 
         document.getElementById('mbd-close').onclick = () => { if (!this._mbdBusy) screen.style.display = 'none'; };
         document.getElementById('mbd-connect-btn').onclick = () => this._moonbirdToggle();
@@ -885,6 +895,8 @@ class App {
                 this._moonbirdCalibration = diag.calibration;
                 this.db.setSetting('moonbirdCalibration', diag.calibration).catch(() => {});
             }
+            const learned = this.moonbird.learnedOverheadMs;
+            if (learned) this.db.setSetting('moonbirdOverheadMs', learned).catch(() => {});
             if (progress) progress.textContent = 'Fertig.';
         } catch (err) {
             if (progress) progress.textContent = err.message === 'Abgebrochen' ? 'Abgebrochen.' : `Fehler: ${err.message}`;

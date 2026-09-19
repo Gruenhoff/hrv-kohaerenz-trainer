@@ -73,13 +73,27 @@ export function analyzeTrace(traceIn, opts = {}) {
     const sessions = trace.filter(e => e.type === 'session');
     const decisions = trace.filter(e => e.type === 'decision');
 
-    const used = new Set();
+    // Start → Einatem-Signal zuordnen. Mit Vorhalt wird der Startbefehl VOR dem Signal gesendet (session.early):
+    // dann gehört er zum nächsten Signal, sonst zum vorangegangenen.
+    const startInfos = starts.map(st => {
+        const sess = sessions.find(x => x.tReply != null && Math.abs(x.tReply - st.tReply) < 5) ?? null;
+        return { st, sess, early: !!sess?.early };
+    });
+    const byCycle = new Map();
+    for (const si of startInfos) {
+        let idx = -1;
+        if (si.early) idx = inhales.findIndex(e => e.t >= si.st.tSend - 50);
+        else for (let i = inhales.length - 1; i >= 0; i--) if (inhales[i].t <= si.st.tSend + 50) { idx = i; break; }
+        if (idx >= 0 && !byCycle.has(idx)) byCycle.set(idx, si);
+    }
+    const leadWin = Math.max(0, ...sessions.map(x => x.lead || 0)) + 120;   // Entscheidungen zum Start liegen vor dem Signal
+
     const cycles = [];
     for (let i = 0; i < inhales.length; i++) {
         const tP = inhales[i].t;
         const tNext = inhales[i + 1]?.t ?? null;
         const rhythm = [...rhythms].reverse().find(r => r.t <= tP + 60)?.rhythm ?? null;
-        const inCycle = (e) => e.t >= tP - 50 && (tNext === null || e.t < tNext);
+        const inCycle = (e) => e.t >= tP - leadWin && (tNext === null || e.t < tNext - leadWin);
         const tHoldOut = phaseEvents.find(e => e.phase === 'holdOut' && e.t > tP && (tNext === null || e.t < tNext))?.t ?? null;
 
         const c = {
@@ -89,16 +103,17 @@ export function analyzeTrace(traceIn, opts = {}) {
             matched: false,
             flags: {},
         };
-        decisions.filter(inCycle).forEach(d => { c.flags[d.what] = (c.flags[d.what] || 0) + 1; });
+        decisions.filter(inCycle).forEach(d => { if (d.what !== 'schedule' && d.what !== 'end-bias') c.flags[d.what] = (c.flags[d.what] || 0) + 1; });
 
-        const start = starts.find(s => !used.has(s) && s.tSend >= tP - 100 && (tNext === null || s.tSend < tNext));
-        if (start) {
-            used.add(start);
-            const sess = sessions.find(s => s.tReply != null && Math.abs(s.tReply - start.tReply) < 5) ?? null;
+        const si = byCycle.get(i);
+        if (si) {
+            const { st: start, sess } = si;
             const endEvt = ends.find(e => e.t > start.tSend);
             c.matched = true;
+            c.early = si.early;
+            c.lead = sess?.lead || 0;
             c.tSend = start.tSend;
-            c.cmdLag = start.tSend - tP;                       // Wartezeit in der App bis zum Senden
+            c.cmdLag = start.tSend - tP;                       // negativ: mit Vorhalt vor dem Einatem-Signal gesendet
             c.ack = start.tWritten != null ? start.tWritten - start.tSend : null;
             c.devStart = start.tSend + startBias;              // geschätzter Beginn am Gerät
             c.startLag = c.devStart - tP;                      // Versatz zum Pacer-Einatmen
@@ -126,6 +141,9 @@ export function analyzeTrace(traceIn, opts = {}) {
     const m = cycles.filter(c => c.matched);
     // Rhythmuswechsel (reprepare) verschiebt den Start sprunghaft — für Frequenz/Drift ausklammern
     const clean = m.filter(c => !c.flags.reprepare);
+    // Die ersten Atemzüge sind die Lernphase des Ausgleichs (Lücke wird gemessen) — für Drift/Streuung getrennt betrachten
+    const steadyFrom = full.length >= 6 ? 2 : 0;
+    const steady = clean.filter(c => c.i >= steadyFrom);
     const nextOf = (c) => cycles[c.i + 1];
     const periodPairs = cycles.filter(c => c.devPeriod != null && !c.flags.reprepare && !nextOf(c)?.flags.reprepare);
     const sumDev = periodPairs.reduce((s, c) => s + c.devPeriod, 0);
@@ -137,10 +155,12 @@ export function analyzeTrace(traceIn, opts = {}) {
     const good = full.filter(c => c.matched && Math.abs(c.startLag) <= START_TOL_MS
         && (c.endOffset == null || Math.abs(c.endOffset) <= END_TOL_MS));
 
+    const rhythmChanges = cycles.filter((c, i) => i > 0 && c.rhythm && cycles[i - 1].rhythm && cycleOf(c.rhythm) !== cycleOf(cycles[i - 1].rhythm)).length;
     const overheadEvents = decisions.filter(d => d.what === 'overhead');
     const lastOverhead = overheadEvents[overheadEvents.length - 1] || null;
 
     const summary = {
+        rhythmChanges,
         gapEstMs: lastOverhead ? lastOverhead.gap : null,
         overheadMs: lastOverhead ? lastOverhead.to : null,
         pacerCycles: full.length,
@@ -157,7 +177,10 @@ export function analyzeTrace(traceIn, opts = {}) {
         periodErr: stats(periodPairs.map(c => c.periodErr)),
         freqErrorPct: sumPacer ? (sumDev / sumPacer - 1) * 100 : null,
         startLagClean: stats(clean.map(c => c.startLag)),
-        lagSlope: slope(clean.map(c => c.i), clean.map(c => c.startLag)),
+        startLagSteady: steadyFrom ? stats(steady.map(c => c.startLag)) : null,
+        startLagMax: m.length ? Math.max(...m.map(c => c.startLag)) : null,
+        leadMs: m.length ? stats(m.map(c => c.lead || 0)).mean : 0,
+        lagSlope: slope(steady.map(c => c.i), steady.map(c => c.startLag), 3),
         decisionCounts,
         startOkPct: m.length ? 100 * m.filter(c => Math.abs(c.startLag) <= START_TOL_MS).length / m.length : null,
         mirrorQualityPct: full.length ? 100 * good.length / full.length : null,
@@ -202,14 +225,21 @@ export function traceFindings(a, label) {
     }
 
     if (s.startLag) {
-        const base = s.startLagClean || s.startLag;   // Zyklen mit Rhythmuswechsel zählen separat
+        const base = s.startLagSteady || s.startLagClean || s.startLag;   // Lernphase und Rhythmuswechsel zählen separat
         const m = base.mean, sd = base.sd;
         const sev = Math.abs(m) > 250 ? 'bad' : Math.abs(m) > START_TOL_MS ? 'warn' : 'ok';
         out.push(F(sev, `${L}Start: Moonbird beginnt Ø ${sgn(m)} ms nach dem Pacer-Einatmen (σ ${r0(sd)} ms)`,
-            `Davon ${r0(s.cmdLag?.mean)} ms Wartezeit in der App bis zum Senden, ${r0(s.ack?.mean)} ms Schreib-Bestätigung, Rest Gerätestart${s.calibrated ? ' (kalibriert über Geräteuhr)' : ' (geschätzt, ohne Kalibrierung)'}. Schätzunsicherheit ca. ±${r0(s.oneWayMs)} ms.`,
+            (s.leadMs > 0
+                ? `Startbefehl wird ${r0(s.leadMs)} ms VOR dem Einatem-Signal gesendet (Vorhalt), Gerätestart ${r0(s.startBias)} ms nach dem Senden.`
+                : `Davon ${r0(s.cmdLag?.mean)} ms Wartezeit in der App bis zum Senden, ${r0(s.ack?.mean)} ms Schreib-Bestätigung, Rest Gerätestart.`)
+            + `${s.calibrated ? ' (kalibriert über Geräteuhr)' : ' (geschätzt, ohne Kalibrierung)'} Schätzunsicherheit ca. ±${r0(s.oneWayMs)} ms.`,
             sev === 'ok' ? null : (Math.abs(m) <= 400
                 ? `Vorhalt: den Start-Befehl ca. ${r0(m)} ms VOR dem Einatem-Signal senden (Zeitpunkt aus dem Pacer-Zyklus vorausberechnen).`
                 : 'Zuerst die Ursache des großen Verzugs beheben (Datenstrom-Befund, „Moonbird noch im vorigen Atemzug"); ein Vorhalt hilft erst bei kleinem, stabilem Versatz.')));
+        if (s.startLagMax > 350 && s.startLagSteady) {
+            out.push(F('info', `${L}Einschwingphase: Startverzug bis +${r0(s.startLagMax)} ms in den ersten Atemzügen, danach Ø ${sgn(s.startLagSteady.mean)} ms`,
+                'Der Ausgleich lernt in den ersten 2–3 Atemzügen die reale Lücke zwischen zwei Atemzügen; der gelernte Wert wird gespeichert und beim nächsten Training gleich verwendet.'));
+        }
         if (sd > 80) {
             out.push(F('warn', `${L}Startzeitpunkt schwankt (σ ${r0(sd)} ms, max ${sgn(base.max)} ms)`,
                 'Ein fester Vorhalt kann die Streuung nicht beseitigen — sie stammt aus BLE-Übertragung/Verbindungsintervall.',
@@ -242,8 +272,16 @@ export function traceFindings(a, label) {
             'Bei Rhythmen ohne Halt lässt sich das nur durch früheres Vorbereiten (Programm während der letzten Ausatmung setzen) vermeiden — vom Gerät aktuell nicht erlaubt (Programm nur im Leerlauf).'));
     }
     if (s.endOffset && Math.abs(s.endOffset.mean) > END_TOL_MS) {
-        out.push(F('warn', `${L}Ende der Ausatmung ${sgn(s.endOffset.mean)} ms gegenüber Pacer`,
-            `σ ${r0(s.endOffset.sd)} ms.`, 'Startverzug und Atemzug-Länge zusammen prüfen; Ende-Latenz kalibrieren.'));
+        // Erwartet: Das Moonbird endet um die bewusste Kürzung (Totzeit) früher als der Pacer
+        const expected = s.breathDeficit && s.breathDeficit.mean > 100 ? -s.breathDeficit.mean : 0;
+        const unexplained = s.endOffset.mean - expected;
+        if (Math.abs(unexplained) <= END_TOL_MS) {
+            out.push(F('info', `${L}Ausatmung endet am Moonbird ${r0(Math.abs(s.endOffset.mean))} ms vor dem Pacer-Ende (gewollt)`,
+                `Entspricht der Kürzung um die Totzeit zwischen zwei Atemzügen (${r0(s.breathDeficit.mean)} ms); danach folgt am Moonbird eine kurze Pause bis zum nächsten Einatmen.`));
+        } else {
+            out.push(F('warn', `${L}Ende der Ausatmung ${sgn(s.endOffset.mean)} ms gegenüber Pacer`,
+                `σ ${r0(s.endOffset.sd)} ms${expected ? `; davon ${r0(-expected)} ms durch die gewollte Kürzung erklärt` : ''}.`, 'Startverzug und Atemzug-Länge zusammen prüfen; Ende-Latenz kalibrieren.'));
+        }
     }
 
     const d = s.decisionCounts;
@@ -255,6 +293,11 @@ export function traceFindings(a, label) {
     if (d['wait-preparing'] || d['prepare-missing']) {
         out.push(F('warn', `${L}Programm war beim Einatem-Signal noch nicht gesetzt (${(d['wait-preparing'] || 0) + (d['prepare-missing'] || 0)}×)`,
             'Nach dem Ende-Ereignis dauert das Setzen des Programms; bei Halt ≈ 0 ist es nicht rechtzeitig fertig.', 'Wie oben: Halt nach Ausatmen vergrößern oder Ausatmung am Gerät kürzen.'));
+    }
+    if (s.rhythmChanges > 0 && s.leadMs > 0) {
+        out.push(F('info', `${L}${s.rhythmChanges} Rhythmuswechsel: das Moonbird übernimmt sie einen Atemzug später`,
+            'Mit Vorhalt wird der nächste Atemzug schon vor dem Einatem-Signal gestartet, also noch mit dem alten Rhythmus. Dafür startet er exakt im Takt; nach einer Verkürzung des Rhythmus entsteht einmalig ein Rückstand von etwa der Differenz.',
+            'Bei den seltenen, kleinen Schritten des Adaptiven Trainings (±0,3 s) ist das unkritisch.'));
     }
     if (s.reprepareCost != null) {
         out.push(F(s.reprepareCost > 100 ? 'warn' : 'info', `${L}Rhythmuswechsel kostet Ø ${sgn(s.reprepareCost)} ms Startverzug (${s.reprepareCount}×)`,
@@ -603,6 +646,7 @@ export class MoonbirdDiagnostics {
             };
             res.reliable = n >= 8 && resSd < 60;
             this.calibration = res.reliable ? { startBias: res.startBias, endLatency: res.endLatency } : null;
+            if (res.reliable && res.startBias > 40 && res.startBias < 450) this.mb.leadOverrideMs = res.startBias;
             return (this.results.clock = res);
         } catch (err) {
             return (this.results.clock = { error: err.message });
@@ -628,6 +672,7 @@ export class MoonbirdDiagnostics {
             if (!(rep[1] === 1 && rep[2] === 0)) throw new Error('Start abgelehnt');
             const startMid = (this._lastCmd(0x07).tSend + rep.tRecv) / 2;
             mb.resetStreamStats();
+            const endPromise = mb.waitSessionEnd(25000);      // vor den Abfragen registrieren, sonst wird das Ende verpasst
 
             const runRtts = [];
             let timeouts = 0;
@@ -638,7 +683,7 @@ export class MoonbirdDiagnostics {
                 await this._sleep(250);
             }
             const stream = mb.streamStats;
-            const ended = await mb.waitSessionEnd(20000);
+            const ended = await endPromise;
             const tEnd = this._lastEndTime();
             const res = {
                 idle: stats(idle),
@@ -710,12 +755,13 @@ export class MoonbirdDiagnostics {
                     idx++;
                     if (idx >= cycles) {
                         stopped = true;
-                        releasePromise = mb.release();          // laufenden Atemzug noch beenden lassen
+                        releasePromise = mb.release();          // letzten Atemzug noch beenden lassen
                         mb.onPacerPhase(phase);                  // nur protokollieren (Kopplung ist bereits beendet)
                         pacer.stop();
                         resolve();
                         return;
                     }
+                    if (idx === cycles - 1) mb.stopAfterCurrent();   // dieser Atemzug ist der letzte — kein Vorhalt-Start für einen weiteren
                     const next = rhythms[idx % rhythms.length];
                     const cur = pacer.rhythm;
                     if (cur.inhale !== next.inhale || cur.holdIn !== next.holdIn || cur.exhale !== next.exhale || cur.holdOut !== next.holdOut) {
