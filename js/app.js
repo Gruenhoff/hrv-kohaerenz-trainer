@@ -15,6 +15,7 @@ import { FrequencyTest, RhythmTest, rhythmToString } from './resonanz.js';
 import { NightRecording } from './nightRecording.js';
 import { AdaptiveTraining } from './adaptiveTraining.js';
 import { SpeechCoach } from './speech.js';
+import { MoonbirdController } from './moonbird.js';
 
 // ─── Phasenspezifische Dauer-Optionen ────────────────────────────────────────
 const PHASE_DURATIONS = {
@@ -94,6 +95,17 @@ class App {
         this.adaptivePacer   = null;
         this._adaptiveTicker = null;
         this.speechCoach     = new SpeechCoach();
+
+        // Moonbird (optionale Haptik-Atemführung, folgt dem Pacer des Adaptiven Trainings)
+        this.moonbird = new MoonbirdController();
+        this.moonbird.onConnectionChange = (connected) => {
+            this._moonbirdUpdateUI();
+            if (!connected && this.adaptiveTest?.active) {
+                this._showToast('Moonbird getrennt – Training läuft ohne Moonbird weiter.');
+            }
+        };
+        this.moonbird.onNotice = (msg) => this._showToast(msg);
+        this.moonbird.onError  = (msg) => this._showError(msg);
 
         // Volles Training (Phase 1 → 2 → 3 automatisch)
         this.fullTraining = {
@@ -580,6 +592,12 @@ class App {
         const stopBtn = document.getElementById('adaptive-stop-btn');
         if (stopBtn) stopBtn.onclick = () => this._adaptiveStop();
 
+        const moonbirdBtn = document.getElementById('adaptive-moonbird-btn');
+        if (moonbirdBtn) moonbirdBtn.onclick = () => this._moonbirdToggle();
+        const moonbirdRow = document.getElementById('adaptive-moonbird-row');
+        if (moonbirdRow) moonbirdRow.style.display = MoonbirdController.isAvailable() ? '' : 'none';
+        this._moonbirdUpdateUI();
+
         const doneBtn = document.getElementById('adaptive-done-btn');
         if (doneBtn) doneBtn.onclick = () => { screen.style.display = 'none'; this._trainingModeShow('select'); };
     }
@@ -626,6 +644,7 @@ class App {
                 this.adaptivePacer.rhythm = rhythm;
                 this.adaptivePacer.startTime = performance.now();
             }
+            this.moonbird.setRhythm(rhythm); // Moonbird übernimmt ihn ab dem nächsten Atemzug
         };
         test.onCalibrationDone = () => {
             const label = document.getElementById('adaptive-status-label');
@@ -640,10 +659,22 @@ class App {
         const container    = document.getElementById('adaptive-pacer-container');
         const labelEl       = document.getElementById('adaptive-breath-label');
         const countdownEl   = document.getElementById('adaptive-breath-countdown');
+        // Moonbird vorbereiten (best effort): erstes Programm setzen, bevor der Pacer losläuft,
+        // damit schon der erste Atemzug gespürt wird. Ohne Moonbird ändert sich nichts.
+        if (this.moonbird.isConnected) {
+            if (startBtn) startBtn.textContent = 'Moonbird wird vorbereitet…';
+            const moonbirdReady = await this.moonbird.follow(baseRhythm);
+            if (startBtn) startBtn.textContent = 'Training starten';
+            if (!moonbirdReady) this._showToast('Moonbird nicht bereit – Training läuft ohne Moonbird.');
+        }
+
         if (this.adaptivePacer) this.adaptivePacer.destroy();
         if (container) {
             this.adaptivePacer = new BreathPacer(container, baseRhythm, labelEl, countdownEl, this.audio);
-            this.adaptivePacer.onPhaseChange = (phase) => test.notifyPhaseChange(phase);
+            this.adaptivePacer.onPhaseChange = (phase) => {
+                test.notifyPhaseChange(phase);
+                this.moonbird.onPacerPhase(phase);
+            };
             this.adaptivePacer.start();
         }
 
@@ -672,6 +703,7 @@ class App {
         this.speechCoach.stop();
         this.audio.stop();
         this.ble.disableEcgStream().catch(() => {});
+        this.moonbird.release().catch(() => {});
         this.adaptiveTest = null;
         this._adaptiveShowSection('adaptive-setup');
         const startBtn = document.getElementById('adaptive-start-btn');
@@ -732,8 +764,38 @@ class App {
         if (this.adaptivePacer) { this.adaptivePacer.stop(); this.adaptivePacer.destroy(); this.adaptivePacer = null; }
         this.speechCoach.stop();
         this.audio.stop();
+        this.moonbird.release().catch(() => {}); // laufender Atemzug wird noch zu Ende geführt
         await this.ble.disableEcgStream();
         if (this.adaptiveTest) await this.adaptiveTest.stop(); // löst onComplete aus → zeigt Zusammenfassung
+    }
+
+    // ─── Moonbird (Verbindung im Adaptiven-Training-Setup) ──────────────────
+
+    async _moonbirdToggle() {
+        const btn = document.getElementById('adaptive-moonbird-btn');
+        if (this.moonbird.isConnected) {
+            this.moonbird.disconnect();
+            return;
+        }
+        if (btn) btn.disabled = true;
+        try {
+            await this.moonbird.connect();
+        } finally {
+            if (btn) btn.disabled = false;
+            this._moonbirdUpdateUI();
+        }
+    }
+
+    _moonbirdUpdateUI() {
+        const status = document.getElementById('adaptive-moonbird-status');
+        const btn = document.getElementById('adaptive-moonbird-btn');
+        const connected = this.moonbird.isConnected;
+        if (status) {
+            status.textContent = connected
+                ? 'Moonbird verbunden – folgt dem Atemrhythmus'
+                : 'Moonbird (optional): nicht verbunden';
+        }
+        if (btn) btn.textContent = connected ? 'Moonbird trennen' : 'Moonbird verbinden';
     }
 
     _adaptiveOnComplete(summary) {
