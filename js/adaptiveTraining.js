@@ -246,6 +246,11 @@ export class AdaptiveTraining {
     noteEpoch(effectiveTs, rhythm) {
         this._epochs.push({ from: effectiveTs, rhythm: { ...rhythm } });
         this._cyclesSinceApply = 0;
+        // Messungen unter dem alten Rhythmus nicht in den neuen Median einmischen:
+        // die gespeicherten Segment-Längen (l.len) gelten für den vorigen Rhythmus und
+        // verfälschen die Korrekturberechnung (median(l.len + l.lag) - current).
+        this._lags.rising = [];
+        this._lags.falling = [];
     }
 
     _epochAt(ts) {

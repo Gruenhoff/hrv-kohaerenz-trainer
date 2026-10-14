@@ -3,7 +3,7 @@
  * Ermöglicht Offline-Nutzung (außer Bluetooth-Verbindung)
  */
 
-const CACHE_NAME = 'hrv-trainer-v18';
+const CACHE_NAME = 'hrv-trainer-v19';
 
 // Relative Pfade → funktioniert in Root-Deploy und Subdirectory-Deploy (GitHub Pages)
 const BASE = self.registration.scope;

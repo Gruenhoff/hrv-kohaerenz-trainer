@@ -656,6 +656,13 @@ class App {
         }
 
         const baseRhythm = await this._resolveResonanceRhythm();
+        // Mit Moonbird: holdOut mindestens so lang wie die gemessene Extra-Pause,
+        // damit Rhythmuswechsel nahtlos in die Pause fallen und nicht spürbar sind.
+        if (this.moonbird.isConnected) {
+            const savedPause = await this.db.getSetting('moonbirdExtraPauseMs', null).catch(() => null);
+            const minHoldOut = savedPause ?? 600; // 600ms Fallback beim ersten Mal
+            if (baseRhythm.holdOut < minHoldOut) baseRhythm.holdOut = minHoldOut;
+        }
         const test = new AdaptiveTraining(this.hrv, this.db, baseRhythm);
         this.adaptiveTest = test;
 
@@ -988,9 +995,16 @@ class App {
         this.adaptiveTest = null;
         this._adaptiveShowSection('adaptive-result');
 
+        // Gemessene Extra-Pause für den nächsten Start speichern (damit holdOut passt)
+        const live = analyzeLastTraining(this.moonbird.trace);
+        const ep = live.analysis?.summary?.extraPause;
+        if (ep?.mean > 0) {
+            this.db.setSetting('moonbirdExtraPauseMs', Math.round(ep.mean)).catch(() => {});
+        }
+
         const reportBtn = document.getElementById('adaptive-moonbird-report-btn');
         if (reportBtn) {
-            const hasLive = !!analyzeLastTraining(this.moonbird.trace).analysis;
+            const hasLive = !!live.analysis;
             reportBtn.style.display = hasLive ? '' : 'none';
             reportBtn.onclick = () => this._moonbirdDiagOpen({ runLive: true });
         }
