@@ -660,7 +660,8 @@ class App {
         // damit Rhythmuswechsel nahtlos in die Pause fallen und nicht spürbar sind.
         if (this.moonbird.isConnected) {
             const savedPause = await this.db.getSetting('moonbirdExtraPauseMs', null).catch(() => null);
-            const minHoldOut = savedPause ?? 600; // 600ms Fallback beim ersten Mal
+            // Clamp: ungültige Werte (zu klein oder zu groß) ignorieren; 600 ms Fallback beim ersten Mal
+            const minHoldOut = (savedPause > 100 && savedPause < 1500) ? savedPause : 600;
             if (baseRhythm.holdOut < minHoldOut) baseRhythm.holdOut = minHoldOut;
         }
         const test = new AdaptiveTraining(this.hrv, this.db, baseRhythm);
