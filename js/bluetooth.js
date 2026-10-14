@@ -7,6 +7,10 @@
 const HR_SERVICE_UUID        = 0x180d;
 const HR_CHARACTERISTIC_UUID = 0x2a37;
 
+// Standard Battery Service
+const BATTERY_SERVICE_UUID        = 0x180f;
+const BATTERY_LEVEL_UUID          = 0x2a19;
+
 // Polar Measurement Data Service (für rohes EKG, z.B. für EDR-Atemableitung)
 const PMD_SERVICE_UUID  = 'fb005c80-02e7-f387-1cad-8acd2d8df0c8';
 const PMD_CONTROL_UUID  = 'fb005c81-02e7-f387-1cad-8acd2d8df0c8';
@@ -57,6 +61,7 @@ export class PolarBluetooth {
         this.onError      = null;    // (message: string) => void
         this.onStatusChange = null;  // (status: string) => void
         this.onEcgSample    = null;  // (microVolt: number, tsMs: number) => void — tsMs auf performance.now()-Achse
+        this.onBatteryLevel = null;  // (percent: number) => void
     }
 
     /**
@@ -83,7 +88,7 @@ export class PolarBluetooth {
                     { namePrefix: 'Polar' },
                     { services: [HR_SERVICE_UUID] },
                 ],
-                optionalServices: [HR_SERVICE_UUID, PMD_SERVICE_UUID],
+                optionalServices: [HR_SERVICE_UUID, PMD_SERVICE_UUID, BATTERY_SERVICE_UUID],
             });
 
             this.device.addEventListener('gattserverdisconnected', () => {
@@ -133,6 +138,9 @@ export class PolarBluetooth {
             this.pmdDataChar    = null;
             await this.enableEcgStream();
         }
+
+        // Akkustand einmalig auslesen (best effort — nicht alle Geräte unterstützen den Service)
+        this._readBatteryLevel().catch(() => {});
 
         if (this.onConnect) this.onConnect();
     }
@@ -292,6 +300,18 @@ export class PolarBluetooth {
             const sampleTs = nowMs - (sampleCount - 1 - i) * sampleIntervalMs;
             if (this.onEcgSample) this.onEcgSample(uv, sampleTs);
         }
+    }
+
+    /**
+     * Akkustand einmalig vom Standard Battery Service auslesen.
+     * Schlägt still fehl wenn der Service nicht verfügbar ist.
+     */
+    async _readBatteryLevel() {
+        const service = await this.server.getPrimaryService(BATTERY_SERVICE_UUID);
+        const char    = await service.getCharacteristic(BATTERY_LEVEL_UUID);
+        const value   = await char.readValue();
+        const percent = value.getUint8(0);
+        if (this.onBatteryLevel) this.onBatteryLevel(percent);
     }
 
     /**

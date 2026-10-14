@@ -95,6 +95,7 @@ class App {
         this.adaptiveTest    = null;
         this.adaptivePacer   = null;
         this._adaptiveTicker = null;
+        this._adaptiveRrCount = 0; // RR-Intervalle seit Training-Start (Diagnose-Zähler)
         this.speechCoach     = new SpeechCoach();
 
         // Moonbird (optionale Haptik-Atemführung, folgt dem Pacer des Adaptiven Trainings)
@@ -346,7 +347,8 @@ class App {
                 }
             }
 
-            if (accepted && this.adaptiveTest?.active) {
+            if (this.adaptiveTest?.active) this._adaptiveRrCount++;
+            if (accepted && this.adaptiveTest?.active && this.hrv.rrCount >= 10) {
                 this.adaptiveTest.logRmssd(this.hrv.rmssd());
             }
         };
@@ -369,8 +371,20 @@ class App {
             this._setConnectionStatus(true);
         };
 
+        this.ble.onBatteryLevel = (percent) => {
+            const el = document.getElementById('h10-battery');
+            if (!el) return;
+            const icon = percent <= 15 ? '🪫' : percent <= 40 ? '🔋' : '🔋';
+            el.textContent = `${icon} ${percent}%`;
+            el.style.display = '';
+            el.style.color = percent <= 15 ? 'var(--warning, #f59e0b)' : 'var(--text-secondary)';
+            el.title = `Polar H10 Akku: ${percent}%`;
+        };
+
         this.ble.onDisconnect = () => {
             this._setConnectionStatus(false);
+            const battEl = document.getElementById('h10-battery');
+            if (battEl) battEl.style.display = 'none';
         };
 
         this.ble.onStatusChange = (status) => {
@@ -777,12 +791,22 @@ class App {
 
     _adaptiveStartTicker() {
         clearInterval(this._adaptiveTicker);
+        this._adaptiveRrCount = 0;
         const startTs = performance.now();
         this._adaptiveTicker = setInterval(() => {
             const el = document.getElementById('adaptive-elapsed');
-            if (!el) return;
-            const s = Math.floor((performance.now() - startTs) / 1000);
-            el.textContent = `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+            if (el) {
+                const s = Math.floor((performance.now() - startTs) / 1000);
+                el.textContent = `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+            }
+            const rrEl = document.getElementById('adaptive-rr-status');
+            if (rrEl) {
+                const elapsed = (performance.now() - startTs) / 1000;
+                const rate = elapsed > 0 ? (this._adaptiveRrCount / elapsed).toFixed(1) : '0.0';
+                const warn = this._adaptiveRrCount < elapsed * 0.5; // < 0,5/s = zu wenig
+                rrEl.textContent = `RR-Signale: ${this._adaptiveRrCount} (${rate}/s)`;
+                rrEl.style.color = warn ? 'var(--warning, #f59e0b)' : 'var(--text-secondary)';
+            }
         }, 1000);
     }
 
@@ -1001,7 +1025,9 @@ class App {
             if (summary.avgReactivityIndex) {
                 rows.push(['Reaktivitäts-Index', `${summary.avgReactivityIndex} bpm/s bei normaler Atemtiefe`]);
             }
-            if (summary.bandLimited) {
+            if (summary.avgAmplitude === 0 && summary.cyclesObserved > 0) {
+                rows.push(['⚠ Hinweis', 'Keine HRV-Zyklusdaten – Brustgurt-Elektroden waren zu trocken oder der Kontakt war unterbrochen. Elektroden anfeuchten und neu starten.']);
+            } else if (summary.bandLimited) {
                 // Klebt der Rhythmus an 3,5 bzw. 8,0/min, wollte die Schleife noch weiter —
                 // entweder ist das echt, oder die Messung stimmt nicht. Beides sollte sichtbar sein.
                 rows.push(['Hinweis', `${summary.bandLimited}× an der Frequenzgrenze gedeckelt`]);
@@ -1014,6 +1040,9 @@ class App {
             }
             rows.push(['Sprach-Hinweise', `${summary.speechCues}×`]);
             rows.push(['Beobachtete Zyklen', `${summary.cyclesObserved}`]);
+            if (this._adaptiveRrCount !== undefined) {
+                rows.push(['RR-Intervalle gesamt', `${this._adaptiveRrCount}`]);
+            }
 
             el.innerHTML = rows.map(([label, val]) => `
                 <div class="settings-row"><div class="settings-label">${label}</div><span style="font-size:0.85rem;text-align:right">${val}</span></div>
