@@ -705,7 +705,8 @@ class App {
                     return res;
                 };
             } else {
-                this._showToast('Moonbird nicht bereit – Training läuft ohne Moonbird.');
+                // Fehlergrund kommt bereits via onError (_showError); hier nur Fallback-Hinweis
+                this._showToast('Moonbird startet nicht – Training läuft ohne Moonbird. Rote Fehlermeldung beachten.');
             }
         }
 
@@ -3172,7 +3173,7 @@ class App {
         if (toast) {
             toast.textContent = msg;
             toast.classList.add('active');
-            setTimeout(() => toast.classList.remove('active'), 5000);
+            setTimeout(() => toast.classList.remove('active'), 8000);
         } else {
             console.error(msg);
         }
